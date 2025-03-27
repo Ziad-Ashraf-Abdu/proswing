@@ -1,0 +1,97 @@
+name: proswing
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Keep using the latest version of flutter_svg.
+  flutter_svg: ^2.0.10+1
+
+  # Upgrade flutter_widget_from_html to the version compatible with flutter_svg ^2.0.0.
+  flutter_widget_from_html: ^0.15.2
+
+  cupertino_icons: ^1.0.2
+  intl: ^0.20.2
+  animations: ^2.0.1
+  google_sign_in: ^6.2.1
+  firebase_auth: ^5.4.1
+  url_launcher: ^6.3.0
+  smooth_page_indicator: ^1.2.0+3
+  http: ^1.2.2
+  calendar_view: ^1.2.0
+  
+  firebase_core: ^3.10.1
+  firebase_storage: ^12.4.2
+  file_picker: ^8.3.2
+  cloud_firestore: ^5.6.2
+  flutter_blue_plus: ^1.35.2
+
+  rxdart: ^0.28.0
+  fl_chart: ^0.70.2
+
+  syncfusion_flutter_charts: ^28.2.5+1
+
+  csv: ^6.0.0
+  
+  path_provider: ^2.1.1
+  permission_handler: ^11.3.1
+  open_file: ^3.3.2
+dependency_overrides:
+  rxdart: ^0.26.0  # Force older rxdart version
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.14.3  
+  shared_preferences: ^2.3.2
+  flutter_html: ^3.0.0-beta.2
+  flutter_link_previewer: ^3.2.2
+  table_calendar: ^3.0.8
+  percent_indicator: ^4.2.3
+  csv: ^6.0.0
+  flutter_colorpicker: ^1.1.0
+  kalender: ^0.5.0
+  fl_chart: ^0.70.2
+  syncfusion_flutter_charts: ^28.2.3
+  syncfusion_flutter_core: ^28.2.2
+  open_file: ^3.5.10
+  camera: 0.11.0+2
+  
+
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/image/logo.png"
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/image/
+    - assets/icon/
+    - assets/quotes.csv
+    - assets/Adv1.CSV
+    - assets/parameter_ranges_launch.csv
+    - assets/image/Picsart_24-09-21_04-26-50-144.png
+    - lib/page/Home/userTeams.csv
+
+
+  fonts:
+    - family: SF Pro
+      fonts:
+        - asset: assets/font/SF-Pro-Display-Black.ttf
+        - asset: assets/font/SF-Pro-Display-Bold.ttf
+        - asset: assets/font/SF-Pro-Display-Light.ttf
+        - asset: assets/font/SF-Pro-Display-Medium.ttf
+        - asset: assets/font/SF-Pro-Display-Regular.ttf
+        - asset: assets/font/SF-Pro-Display-Semibold.ttf
+        - asset: assets/font/SF-Pro-Display-Thin.ttf
+        - asset: assets/font/SF-Pro-Display-Ultralight.ttf
