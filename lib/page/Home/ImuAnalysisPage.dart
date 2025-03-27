@@ -239,14 +239,14 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
   }
 
   // Updated _toggleMockData: when activated, fetch mock data automatically.
-  void _toggleMockData(bool value) {
-    setState(() {
-      _useMockData = value;
-    });
-    if (_useMockData) {
-      _fetchData();
-    }
-  }
+  // void _toggleMockData(bool value) {
+  //   setState(() {
+  //     _useMockData = value;
+  //   });
+  //   if (_useMockData) {
+  //     _fetchData();
+  //   }
+  // }
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
     try {
@@ -502,27 +502,27 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
     }
   }
 
-  Widget _buildIMUDataDisplay() {
-    if (!_showChart || _matrix.isEmpty) {
-      return const Center(
-        child: Text("No Data Available", style: TextStyle(color: Colors.white)),
-      );
-    }
-    print("Plotting data with ${_generateLineSeries().length} series.");
-    return SizedBox(
-      height: 300,
-      width: double.infinity,
-      child: Padding(
-        padding: const EdgeInsets.all(8.0),
-        child: SfCartesianChart(
-          legend: Legend(isVisible: true),
-          primaryXAxis: NumericAxis(title: AxisTitle(text: "Time Stamp")),
-          primaryYAxis: NumericAxis(title: AxisTitle(text: "Parameter Value")),
-          series: _generateLineSeries(),
-        ),
-      ),
-    );
-  }
+  // Widget _buildIMUDataDisplay() {
+  //   if (!_showChart || _matrix.isEmpty) {
+  //     return const Center(
+  //       child: Text("No Data Available", style: TextStyle(color: Colors.white)),
+  //     );
+  //   }
+  //   print("Plotting data with ${_generateLineSeries().length} series.");
+  //   return SizedBox(
+  //     height: 300,
+  //     width: double.infinity,
+  //     child: Padding(
+  //       padding: const EdgeInsets.all(8.0),
+  //       child: SfCartesianChart(
+  //         legend: Legend(isVisible: true),
+  //         primaryXAxis: NumericAxis(title: AxisTitle(text: "Time Stamp")),
+  //         primaryYAxis: NumericAxis(title: AxisTitle(text: "Parameter Value")),
+  //         series: _generateLineSeries(),
+  //       ),
+  //     ),
+  //   );
+  // }
 
   Widget _buildBottomDrawer() {
     return Container(
@@ -581,15 +581,15 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
             ),
           );
         }),
-        // Display the chart over the training content.
-        if (_showChart)
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
-              color: Colors.black54,
-              child: _buildIMUDataDisplay(),
-            ),
-          ),
+        // // Display the chart over the training content.
+        // if (_showChart)
+        //   Align(
+        //     alignment: Alignment.bottomCenter,
+        //     child: Container(
+        //       color: Colors.black54,
+        //       child: _buildIMUDataDisplay(),
+        //     ),
+        //   ),
       ],
     );
   }
@@ -687,7 +687,7 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
           // Toggle between real and mock data.
           Switch(
             value: _useMockData,
-            onChanged: (value) => _toggleMockData(value),
+            onChanged: (value) => Null //_toggleMockData(value),
           ),
           // Button to import CSV data.
           IconButton(
