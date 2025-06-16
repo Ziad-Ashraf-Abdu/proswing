@@ -11,12 +11,16 @@ dependencies:
   flutter:
     sdk: flutter
 
+  googleapis: ^13.1.0
+  googleapis_auth: ^1.4.1
+
   # Keep using the latest version of flutter_svg.
   flutter_svg: ^2.0.10+1
 
   # Upgrade flutter_widget_from_html to the version compatible with flutter_svg ^2.0.0.
   flutter_widget_from_html: ^0.15.2
 
+  flutter_local_notifications: ^19.2.1
   cupertino_icons: ^1.0.2
   intl: ^0.20.2
   animations: ^2.0.1
@@ -32,6 +36,7 @@ dependencies:
   file_picker: ^8.3.2
   cloud_firestore: ^5.6.2
   flutter_blue_plus: ^1.35.2
+  flutter_libserialport: ^0.5.0
 
   rxdart: ^0.28.0
   fl_chart: ^0.70.2
@@ -43,6 +48,9 @@ dependencies:
   path_provider: ^2.1.1
   permission_handler: ^11.3.1
   open_file: ^3.3.2
+
+
+
 dependency_overrides:
   rxdart: ^0.26.0  # Force older rxdart version
 
@@ -63,7 +71,8 @@ dev_dependencies:
   syncfusion_flutter_core: ^28.2.2
   open_file: ^3.5.10
   camera: 0.11.0+2
-  
+
+
 
 
 flutter_icons:

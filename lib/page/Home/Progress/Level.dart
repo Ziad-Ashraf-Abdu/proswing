@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:syncfusion_flutter_charts/charts.dart'; // Syncfusion charts package
+import 'package:syncfusion_flutter_charts/charts.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 class LevelPage extends StatefulWidget {
   final int value;
@@ -14,6 +16,7 @@ class _LevelPageState extends State<LevelPage>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
+  late Future<int> _adjustedLevelFuture;
 
   @override
   void initState() {
@@ -27,6 +30,9 @@ class _LevelPageState extends State<LevelPage>
 
     _fadeAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
 
+    // Load adjusted level from analysis
+    _adjustedLevelFuture = loadAdjustedLevel();
+
     // Start animation when page loads
     _controller.forward();
   }
@@ -35,6 +41,98 @@ class _LevelPageState extends State<LevelPage>
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<int> loadAdjustedLevel() async {
+    try {
+      File? mostRecentFile = await getMostRecentAnalysisFile();
+
+      if (mostRecentFile == null || !await mostRecentFile.exists()) {
+        print("No analysis file found, using default level");
+        return widget.value;
+      }
+
+      final String data = await mostRecentFile.readAsString();
+      final List<String> lines = data.split('\n');
+
+      // Look for level-related metrics in the analysis file
+      double totalScore = 0.0;
+      int metricCount = 0;
+
+      for (int i = 1; i < lines.length; i++) {
+        final String line = lines[i].trim();
+        if (line.isEmpty) continue;
+
+        final List<String> values = line.split(',');
+        if (values.length >= 2) {
+          final String metricName = values[0].trim().toLowerCase();
+          final double metricValue = double.tryParse(values[1].trim()) ?? 0.0;
+
+          // Consider metrics that contribute to overall level
+          if (isLevelRelevantMetric(metricName)) {
+            totalScore += metricValue;
+            metricCount++;
+          }
+        }
+      }
+
+      if (metricCount > 0) {
+        // Calculate average score and convert to level (0-100 scale)
+        double averageScore = totalScore / metricCount;
+        int adjustedLevel = (averageScore * 100 / 100).round().clamp(0, 100);
+        return adjustedLevel;
+      }
+
+      return widget.value;
+    } catch (e) {
+      print("Error loading adjusted level: $e");
+      return widget.value;
+    }
+  }
+
+  bool isLevelRelevantMetric(String metricName) {
+    // Define which metrics contribute to overall level calculation
+    List<String> relevantMetrics = [
+      'speed', 'velocity', 'ball_speed',
+      'accuracy', 'precision', 'target_accuracy',
+      'consistency', 'stability',
+      'power', 'force',
+      'technique', 'form',
+      'overall_score', 'total_score'
+    ];
+
+    return relevantMetrics.any((metric) => metricName.contains(metric));
+  }
+
+  Future<File?> getMostRecentAnalysisFile() async {
+    try {
+      Directory appDir = await getApplicationSupportDirectory();
+      Directory hiddenDir = Directory('${appDir.path}/.analysis_results');
+
+      if (!await hiddenDir.exists()) {
+        return null;
+      }
+
+      List<FileSystemEntity> files = await hiddenDir.list().toList();
+
+      // Filter CSV files and sort by modification time
+      List<File> csvFiles = files
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.csv'))
+          .toList();
+
+      if (csvFiles.isEmpty) {
+        return null;
+      }
+
+      // Sort by modification time (most recent first)
+      csvFiles.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
+      return csvFiles.first;
+    } catch (e) {
+      print("Error getting most recent analysis file: $e");
+      return null;
+    }
   }
 
   @override
@@ -51,7 +149,19 @@ class _LevelPageState extends State<LevelPage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: 20),
-                  _buildLevelSection(widget.value),
+                  FutureBuilder<int>(
+                    future: _adjustedLevelFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator());
+                      } else if (snapshot.hasError) {
+                        return _buildLevelSection(widget.value);
+                      } else {
+                        int adjustedLevel = snapshot.data ?? widget.value;
+                        return _buildLevelSection(adjustedLevel);
+                      }
+                    },
+                  ),
                   const SizedBox(height: 30),
                   _buildInfoSection(),
                 ],
@@ -85,9 +195,9 @@ class _LevelPageState extends State<LevelPage>
       padding: const EdgeInsets.all(16.0),
       child: Column(
         mainAxisAlignment:
-            MainAxisAlignment.center, // Center column contents vertically
+        MainAxisAlignment.center, // Center column contents vertically
         crossAxisAlignment:
-            CrossAxisAlignment.center, // Center column contents horizontally
+        CrossAxisAlignment.center, // Center column contents horizontally
         children: [
           Text(
             'Level Progress - $status',
@@ -119,7 +229,7 @@ class _LevelPageState extends State<LevelPage>
                   cornerStyle: CornerStyle.bothCurve,
                   xValueMapper: (int data, _) => '',
                   yValueMapper: (int data, _) =>
-                      level, // Progress in scale of 10
+                  level, // Progress in scale of 10
                   pointColorMapper: (int data, _) => Colors.green.shade400,
                   trackColor: Colors.grey.shade700, // Track background color
                 ),
@@ -128,8 +238,27 @@ class _LevelPageState extends State<LevelPage>
           ),
           const SizedBox(height: 20),
           Text(
-            'You have reached level $level out of 10. Keep pushing to reach the next level!',
+            'You have reached level ${level.toStringAsFixed(1)} out of 10. Keep pushing to reach the next level!',
+            textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          const SizedBox(height: 10),
+          FutureBuilder<int>(
+            future: _adjustedLevelFuture,
+            builder: (context, snapshot) {
+              if (snapshot.hasData && snapshot.data != widget.value) {
+                return Text(
+                  'Level updated based on your latest analysis results!',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.blue.shade300,
+                    fontSize: 14,
+                    fontStyle: FontStyle.italic,
+                  ),
+                );
+              }
+              return const SizedBox.shrink();
+            },
           ),
         ],
       ),
@@ -158,9 +287,47 @@ class _LevelPageState extends State<LevelPage>
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
-              'This section contains additional details about your serve and progress milestones, and tips to improve your level.',
-              style: TextStyle(color: Colors.white, fontSize: 16),
+            FutureBuilder<int>(
+              future: _adjustedLevelFuture,
+              builder: (context, snapshot) {
+                if (snapshot.hasData) {
+                  double level = snapshot.data! / 10;
+                  String status = _getUserStatus(level);
+
+                  String tips = '';
+                  switch (status) {
+                    case 'Beginner':
+                      tips = 'Focus on building fundamental skills and consistency. Practice basic techniques regularly and don\'t rush your progress.';
+                      break;
+                    case 'Intermediate':
+                      tips = 'Work on refining your technique and increasing accuracy. Start incorporating more advanced strategies into your practice.';
+                      break;
+                    case 'Advanced':
+                      tips = 'Fine-tune your performance and work on consistency under pressure. Focus on mental game and strategic play.';
+                      break;
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'As a $status level player, $tips',
+                        style: const TextStyle(color: Colors.white, fontSize: 16),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Your level is automatically updated based on your latest session analysis. Keep practicing to see continued improvement!',
+                        style: TextStyle(color: Colors.white, fontSize: 16),
+                      ),
+                    ],
+                  );
+                } else {
+                  return const Text(
+                    'This section contains additional details about your serve and progress milestones, and tips to improve your level.',
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  );
+                }
+              },
             ),
             const SizedBox(height: 10),
             const Text(

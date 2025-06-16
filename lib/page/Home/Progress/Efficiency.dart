@@ -3,6 +3,8 @@
 import 'package:flutter/material.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 class Efficiency extends StatefulWidget {
   final int value; // Passed value into class (progress percentage)
@@ -17,16 +19,18 @@ class Efficiency extends StatefulWidget {
 
 class _EfficiencyState extends State<Efficiency> {
   late Future<List<ChartData>> _idealProgressFuture;
+  late Future<List<ChartData>> _userProgressFuture;
 
   @override
   void initState() {
     super.initState();
     _idealProgressFuture = loadIdealProgress();
+    _userProgressFuture = loadUserProgress();
   }
 
   Future<List<ChartData>> loadIdealProgress() async {
     final String data =
-        await rootBundle.loadString('assets/parameter_ranges_launch.csv');
+    await rootBundle.loadString('assets/parameter_ranges_launch.csv');
     final List<String> lines = data.split('\n');
     final List<ChartData> progress = [];
 
@@ -38,7 +42,6 @@ class _EfficiencyState extends State<Efficiency> {
       if (values.length >= 3) {
         final String parameter = values[0].trim();
         try {
-          // Check for null or invalid values and set defaults if necessary
           final double minValue = double.tryParse(values[1].trim()) ?? 0.0;
           final double maxValue = double.tryParse(values[2].trim()) ?? 0.0;
           progress.add(ChartData(parameter, minValue, maxValue));
@@ -48,6 +51,88 @@ class _EfficiencyState extends State<Efficiency> {
       }
     }
     return progress;
+  }
+
+  Future<List<ChartData>> loadUserProgress() async {
+    try {
+      // Get the most recent analysis file
+      File? mostRecentFile = await getMostRecentAnalysisFile();
+
+      if (mostRecentFile == null || !await mostRecentFile.exists()) {
+        print("No analysis file found, using default progress");
+        return await loadDefaultUserProgress();
+      }
+
+      final String data = await mostRecentFile.readAsString();
+      final List<String> lines = data.split('\n');
+      final List<ChartData> progress = [];
+
+      // Parse the CSV data from the analysis file
+      for (int i = 1; i < lines.length; i++) {
+        final String line = lines[i].trim();
+        if (line.isEmpty) continue;
+
+        final List<String> values = line.split(',');
+        if (values.length >= 3) {
+          final String parameter = values[0].trim();
+          try {
+            final double minValue = double.tryParse(values[1].trim()) ?? 0.0;
+            final double maxValue = double.tryParse(values[2].trim()) ?? 0.0;
+            progress.add(ChartData(parameter, minValue, maxValue));
+          } catch (e) {
+            print("Error parsing analysis line: $line");
+          }
+        }
+      }
+
+      return progress.isEmpty ? await loadDefaultUserProgress() : progress;
+    } catch (e) {
+      print("Error loading user progress: $e");
+      return await loadDefaultUserProgress();
+    }
+  }
+
+  Future<File?> getMostRecentAnalysisFile() async {
+    try {
+      Directory appDir = await getApplicationSupportDirectory();
+      Directory hiddenDir = Directory('${appDir.path}/.analysis_results');
+
+      if (!await hiddenDir.exists()) {
+        return null;
+      }
+
+      List<FileSystemEntity> files = await hiddenDir.list().toList();
+
+      // Filter CSV files and sort by modification time
+      List<File> csvFiles = files
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.csv'))
+          .toList();
+
+      if (csvFiles.isEmpty) {
+        return null;
+      }
+
+      // Sort by modification time (most recent first)
+      csvFiles.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
+      return csvFiles.first;
+    } catch (e) {
+      print("Error getting most recent analysis file: $e");
+      return null;
+    }
+  }
+
+  Future<List<ChartData>> loadDefaultUserProgress() async {
+    // Fallback: Load ideal progress and apply 55% factor
+    final List<ChartData> idealData = await loadIdealProgress();
+    return idealData.map((data) {
+      return ChartData(
+        data.parameter,
+        data.minValue * 0.55,
+        data.maxValue * 0.55,
+      );
+    }).toList();
   }
 
   String calculateLevel(int userLevel) {
@@ -147,30 +232,22 @@ class _EfficiencyState extends State<Efficiency> {
             ),
           ),
           const SizedBox(height: 10),
-          FutureBuilder<List<ChartData>>(
-            future: _idealProgressFuture,
+          FutureBuilder<List<List<ChartData>>>(
+            future: Future.wait([_idealProgressFuture, _userProgressFuture]),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
               } else if (snapshot.hasError) {
                 return Center(
-                    child: Text('Error loading data',
+                    child: Text('Error loading data: ${snapshot.error}',
                         style: const TextStyle(color: Colors.white)));
               } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
                 return Center(
                     child: Text('No data found',
                         style: const TextStyle(color: Colors.white)));
               } else {
-                final List<ChartData> idealData = snapshot.data!;
-
-                // Player progress at 55% of the ideal progress.
-                final List<ChartData> userProgress = idealData.map((data) {
-                  return ChartData(
-                    data.parameter,
-                    data.minValue * 0.55,
-                    data.maxValue * 0.55,
-                  );
-                }).toList();
+                final List<ChartData> idealData = snapshot.data![0];
+                final List<ChartData> userProgress = snapshot.data![1];
 
                 return SfCartesianChart(
                   primaryXAxis: CategoryAxis(),
@@ -178,7 +255,7 @@ class _EfficiencyState extends State<Efficiency> {
                     enablePanning: true,
                   ),
                   series: <CartesianSeries>[
-                    // Ideal progress range (blue) from CSV data.
+                    // Ideal progress range (yellow) from CSV data.
                     RangeAreaSeries<ChartData, String>(
                       dataSource: idealData,
                       xValueMapper: (ChartData data, _) => data.parameter,
@@ -188,7 +265,7 @@ class _EfficiencyState extends State<Efficiency> {
                       borderColor: Colors.yellowAccent,
                       borderWidth: 2,
                     ),
-                    // Player progress range (red) from 55% of ideal data.
+                    // Player progress range (red) from analysis results.
                     RangeAreaSeries<ChartData, String>(
                       dataSource: userProgress,
                       xValueMapper: (ChartData data, _) => data.parameter,

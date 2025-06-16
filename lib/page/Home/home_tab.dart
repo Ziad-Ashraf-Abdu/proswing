@@ -1,6 +1,7 @@
 // ignore_for_file: library_private_types_in_public_api, deprecated_member_use
 
-import 'dart:math'; // generating random numbers
+import 'dart:math';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:proswing/page/Home/CameraAnalysisPage.dart';
 import 'package:proswing/page/Home/ImuAnalysisPage.dart';

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:syncfusion_flutter_charts/charts.dart'; // Syncfusion charts package
+import 'package:syncfusion_flutter_charts/charts.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 class LastSessionAssismentPage extends StatefulWidget {
   final int value;
@@ -14,13 +16,7 @@ class _LastSessionAssismentPageState extends State<LastSessionAssismentPage>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
-
-  // Dummy metric data for additional performance assessment
-  final List<_MetricData> _metrics = [
-    _MetricData("Speed", 80),
-    _MetricData("Accuracy", 70),
-    _MetricData("Consistency", 90),
-  ];
+  late Future<List<_MetricData>> _metricsFuture;
 
   @override
   void initState() {
@@ -33,6 +29,9 @@ class _LastSessionAssismentPageState extends State<LastSessionAssismentPage>
     );
     _fadeAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
 
+    // Load metrics from analysis file
+    _metricsFuture = loadMetricsFromAnalysis();
+
     // Start the animation when the page loads
     _controller.forward();
   }
@@ -41,6 +40,115 @@ class _LastSessionAssismentPageState extends State<LastSessionAssismentPage>
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<List<_MetricData>> loadMetricsFromAnalysis() async {
+    try {
+      File? mostRecentFile = await getMostRecentAnalysisFile();
+
+      if (mostRecentFile == null || !await mostRecentFile.exists()) {
+        print("No analysis file found, using default metrics");
+        return getDefaultMetrics();
+      }
+
+      final String data = await mostRecentFile.readAsString();
+      final List<String> lines = data.split('\n');
+
+      // Parse metrics from the analysis file
+      // Assuming the CSV has columns: metric_name, value
+      List<_MetricData> metrics = [];
+
+      for (int i = 1; i < lines.length; i++) {
+        final String line = lines[i].trim();
+        if (line.isEmpty) continue;
+
+        final List<String> values = line.split(',');
+        if (values.length >= 2) {
+          final String metricName = values[0].trim();
+          final double metricValue = double.tryParse(values[1].trim()) ?? 0.0;
+
+          // Map common metric names to display names
+          String displayName = mapMetricName(metricName);
+          if (displayName.isNotEmpty) {
+            metrics.add(_MetricData(displayName, metricValue));
+          }
+        }
+      }
+
+      return metrics.isEmpty ? getDefaultMetrics() : metrics;
+    } catch (e) {
+      print("Error loading metrics from analysis: $e");
+      return getDefaultMetrics();
+    }
+  }
+
+  String mapMetricName(String metricName) {
+    // Map analysis metric names to user-friendly display names
+    switch (metricName.toLowerCase()) {
+      case 'speed':
+      case 'velocity':
+      case 'ball_speed':
+        return 'Speed';
+      case 'accuracy':
+      case 'precision':
+      case 'target_accuracy':
+        return 'Accuracy';
+      case 'consistency':
+      case 'stability':
+      case 'variation':
+        return 'Consistency';
+      case 'power':
+      case 'force':
+        return 'Power';
+      case 'spin':
+      case 'rotation':
+        return 'Spin';
+      case 'angle':
+      case 'trajectory':
+        return 'Angle';
+      default:
+        return metricName.replaceAll('_', ' ').toUpperCase();
+    }
+  }
+
+  List<_MetricData> getDefaultMetrics() {
+    // Default metrics when no analysis file is available
+    return [
+      _MetricData("Speed", 80),
+      _MetricData("Accuracy", 70),
+      _MetricData("Consistency", 90),
+    ];
+  }
+
+  Future<File?> getMostRecentAnalysisFile() async {
+    try {
+      Directory appDir = await getApplicationSupportDirectory();
+      Directory hiddenDir = Directory('${appDir.path}/.analysis_results');
+
+      if (!await hiddenDir.exists()) {
+        return null;
+      }
+
+      List<FileSystemEntity> files = await hiddenDir.list().toList();
+
+      // Filter CSV files and sort by modification time
+      List<File> csvFiles = files
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.csv'))
+          .toList();
+
+      if (csvFiles.isEmpty) {
+        return null;
+      }
+
+      // Sort by modification time (most recent first)
+      csvFiles.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
+      return csvFiles.first;
+    } catch (e) {
+      print("Error getting most recent analysis file: $e");
+      return null;
+    }
   }
 
   @override
@@ -172,25 +280,49 @@ class _LastSessionAssismentPageState extends State<LastSessionAssismentPage>
               ),
             ),
             const SizedBox(height: 10),
-            SfCartesianChart(
-              primaryXAxis: CategoryAxis(
-                majorGridLines: const MajorGridLines(width: 0),
-              ),
-              primaryYAxis: NumericAxis(
-                minimum: 0,
-                maximum: 100,
-                interval: 20,
-                majorGridLines: const MajorGridLines(width: 0),
-              ),
-              series: <CartesianSeries<_MetricData, String>>[
-                ColumnSeries<_MetricData, String>(
-                  dataSource: _metrics,
-                  xValueMapper: (_MetricData data, _) => data.metric,
-                  yValueMapper: (_MetricData data, _) => data.value,
-                  dataLabelSettings: const DataLabelSettings(isVisible: true),
-                  color: Colors.blueAccent,
-                ),
-              ],
+            FutureBuilder<List<_MetricData>>(
+              future: _metricsFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                } else if (snapshot.hasError) {
+                  return Center(
+                    child: Text(
+                      'Error loading metrics: ${snapshot.error}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  );
+                } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'No metrics available',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  );
+                }
+
+                final List<_MetricData> metrics = snapshot.data!;
+                return SfCartesianChart(
+                  primaryXAxis: CategoryAxis(
+                    majorGridLines: const MajorGridLines(width: 0),
+                  ),
+                  primaryYAxis: NumericAxis(
+                    minimum: 0,
+                    maximum: 100,
+                    interval: 20,
+                    majorGridLines: const MajorGridLines(width: 0),
+                  ),
+                  series: <CartesianSeries<_MetricData, String>>[
+                    ColumnSeries<_MetricData, String>(
+                      dataSource: metrics,
+                      xValueMapper: (_MetricData data, _) => data.metric,
+                      yValueMapper: (_MetricData data, _) => data.value,
+                      dataLabelSettings: const DataLabelSettings(isVisible: true),
+                      color: Colors.blueAccent,
+                    ),
+                  ],
+                );
+              },
             ),
           ],
         ),
@@ -219,9 +351,35 @@ class _LastSessionAssismentPageState extends State<LastSessionAssismentPage>
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
-              'Review your performance metrics and work on improving areas where you lag behind. Focus on increasing your speed and consistency while maintaining high accuracy.',
-              style: TextStyle(color: Colors.white, fontSize: 16),
+            FutureBuilder<List<_MetricData>>(
+              future: _metricsFuture,
+              builder: (context, snapshot) {
+                if (snapshot.hasData && snapshot.data!.isNotEmpty) {
+                  // Generate tips based on actual metrics
+                  List<_MetricData> metrics = snapshot.data!;
+                  _MetricData? lowestMetric = metrics.reduce((a, b) => a.value < b.value ? a : b);
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Based on your latest session analysis, focus on improving your ${lowestMetric.metric.toLowerCase()} (${lowestMetric.value.toStringAsFixed(1)}%).',
+                        style: const TextStyle(color: Colors.white, fontSize: 16),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Review your performance metrics and work on improving areas where you lag behind. Consistent practice will help you reach your goals!',
+                        style: TextStyle(color: Colors.white, fontSize: 16),
+                      ),
+                    ],
+                  );
+                } else {
+                  return const Text(
+                    'Review your performance metrics and work on improving areas where you lag behind. Focus on increasing your speed and consistency while maintaining high accuracy.',
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  );
+                }
+              },
             ),
             const SizedBox(height: 10),
             const Text(

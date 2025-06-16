@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // For kIsWeb
-import 'package:permission_handler/permission_handler.dart';
-import 'package:proswing/bluetooth_communication.dart';
-import 'package:proswing/bluetooth_connect.dart';
-import 'package:proswing/bluetooth_scan.dart';
-import 'package:proswing/mock_bluetooth_device.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:syncfusion_flutter_charts/charts.dart';
-import 'package:csv/csv.dart';
+import 'package:flutter/foundation.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'dart:async';
-import 'package:open_file/open_file.dart';
+import 'dart:typed_data';
+import 'package:csv/csv.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:googleapis_auth/auth_io.dart';
+import 'package:http/http.dart' as http;
 
 class ImuAnalysisPage extends StatefulWidget {
   @override
@@ -20,705 +23,1077 @@ class ImuAnalysisPage extends StatefulWidget {
 
 class _ImuAnalysisPageState extends State<ImuAnalysisPage>
     with TickerProviderStateMixin {
-  // --- Original Variables ---
-  final List<bool> _dotsClicked = List.generate(7, (_) => false);
-  late Animation<double> _zoomAnimation;
-  int _currentDot = 0;
-  bool _isAnimating = false;
-  bool startIsClicked = false;
-  bool _showChart = true;
 
-  late AnimationController _controller;
+  // Animation controllers
+  late AnimationController _uploadAnimationController;
+  late AnimationController _pulseAnimationController;
+  late Animation<double> _uploadAnimation;
+  late Animation<double> _pulseAnimation;
 
-  // Bluetooth-related variables
-  final BluetoothScanner _bluetoothScanner = BluetoothScanner();
-  final BluetoothConnector _bluetoothConnector = BluetoothConnector();
-  final BluetoothCommunication _bluetoothCommunicator = BluetoothCommunication();
-  List<BluetoothDevice> _availableDevices = [];
-  BluetoothDevice? _connectedDevice;
+  // Upload state variables
+  bool _isUploading = false;
+  bool _isAnalyzing = false;
+  double _uploadProgress = 0.0;
+  String _uploadStatus = '';
+  PlatformFile? _selectedFile;
 
-  // For meaningful CSV data:
-  // _matrix stores each data row as List<double> (first column is the time stamp)
-  // _parameterNames stores the header names from the second header row of the CSV.
-  List<List<double>> _matrix = [];
-  List<String> _parameterNames = [];
-  bool _isScanning = false;
-  bool _useMockData = false; // Toggle for mock data
-  MockBluetoothDevice mockDevice = MockBluetoothDevice(
-    name: "IMU Dummy Device",
-    id: "00:11:22:33:44:55",
+  // Firebase instances
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseStorage _storage = FirebaseStorage.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  // Cloud storage instances
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    scopes: [
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive.file',
+    ],
   );
 
-  // --- Session Variables ---
-  bool _sessionStarted = false;
-  int _sessionSeconds = 0;
-  Timer? _sessionTimer;
+  // Notification plugin
+  FlutterLocalNotificationsPlugin? _notificationsPlugin;
+
+  // Supported file types
+  final List<String> _supportedExtensions = ['csv', 'xlsx'];
+
+  // Cloud access status
+  bool _isGoogleDriveConnected = false;
+  bool _isICloudAvailable = false;
 
   @override
   void initState() {
     super.initState();
-    print("Initializing IMU Analysis Page");
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    );
-    _zoomAnimation = CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeInOut,
-    );
-    // Start continuous zoom animation.
-    _controller.repeat(reverse: true);
-
-    _checkBluetoothPermission(); // Request permissions and initialize Bluetooth.
-    _fetchData(); // Pre-fetch data (if any) for chart display.
+    _initializeAnimations();
+    _initializeNotifications();
+    _requestPermissions();
+    _checkCloudAvailability();
   }
 
-  // --- Data Fetching ---
-  Future<void> _fetchData() async {
-    try {
-      if (_connectedDevice != null) {
-        print("Fetching data from the connected IMU device...");
-        // For a real device, we assume the CSV-like format is returned.
-        List<String> receivedData =
-        await _bluetoothCommunicator.startCommunication(_connectedDevice!);
-        // Parse each line into a list of doubles.
-        List<List<double>> data = receivedData.map((line) {
-          return line
-              .split(',')
-              .map((e) => double.tryParse(e) ?? 0.0)
-              .toList();
-        }).toList();
-        // Optionally, if the real device sends header info, you could extract it here.
-        setState(() {
-          _matrix = data;
-          _showChart = true;
-        });
-      } else if (_useMockData) {
-        print("Fetching data from mock IMU device...");
-        // Use the updated method to read CSV data (including headers).
-        await mockDevice.connect();
-        List<MockBluetoothService> services =
-        await mockDevice.discoverServices();
-        // Assume only one service/characteristic for simplicity.
-        Map<String, dynamic> csvResult = {};
-        for (var service in services) {
-          for (var characteristic in service.characteristics) {
-            csvResult = await characteristic.readCsvData();
-            // Break after first result
-            break;
-          }
-        }
-        setState(() {
-          _parameterNames = csvResult['headers']; // Second header row
-          _matrix = csvResult['data']; // Data rows as List<List<double>>
-          _showChart = true;
-        });
-      } else {
-        print("No device connected, and mock data is disabled.");
-        _showPopup("No IMU connected and mock data is disabled.");
-        return;
-      }
-      _printMatrix(_matrix);
-    } catch (e) {
-      print("Error fetching data: $e");
-      _showPopup("Error fetching data: $e");
+  void _initializeAnimations() {
+    _uploadAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    );
+
+    _pulseAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 2000),
+      vsync: this,
+    );
+
+    _uploadAnimation = CurvedAnimation(
+      parent: _uploadAnimationController,
+      curve: Curves.easeInOutCubic,
+    );
+
+    _pulseAnimation = Tween<double>(
+      begin: 1.0,
+      end: 1.1,
+    ).animate(CurvedAnimation(
+      parent: _pulseAnimationController,
+      curve: Curves.easeInOut,
+    ));
+
+    _pulseAnimationController.repeat(reverse: true);
+  }
+
+  Future<void> _initializeNotifications() async {
+    _notificationsPlugin = FlutterLocalNotificationsPlugin();
+
+    const AndroidInitializationSettings initializationSettingsAndroid =
+    AndroidInitializationSettings('@mipmap/ic_launcher');
+
+    const DarwinInitializationSettings initializationSettingsIOS =
+    DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+
+    const InitializationSettings initializationSettings =
+    InitializationSettings(
+      android: initializationSettingsAndroid,
+      iOS: initializationSettingsIOS,
+    );
+
+    await _notificationsPlugin?.initialize(initializationSettings);
+  }
+
+  Future<void> _requestPermissions() async {
+    if (!kIsWeb) {
+      await Permission.storage.request();
+      await Permission.notification.request();
     }
   }
 
-  void _printMatrix(List<List<double>> matrix) {
-    for (var row in matrix) {
-      print(row);
+  Future<void> _checkCloudAvailability() async {
+    // Check if Google Drive is available
+    try {
+      await _googleSignIn.signInSilently();
+      setState(() {
+        _isGoogleDriveConnected = _googleSignIn.currentUser != null;
+      });
+    } catch (e) {
+      print('Google Drive check failed: $e');
+    }
+
+    // Check if iCloud is available (iOS only)
+    if (Platform.isIOS) {
+      setState(() {
+        _isICloudAvailable = true; // iCloud is available through document picker on iOS
+      });
     }
   }
 
   @override
   void dispose() {
-    print("Disposing IMU Analysis Page");
-    _controller.dispose();
-    _sessionTimer?.cancel();
+    _uploadAnimationController.dispose();
+    _pulseAnimationController.dispose();
     super.dispose();
   }
 
-  // --- Permission & Bluetooth Initialization ---
-  Future<void> _checkBluetoothPermission() async {
-    if (kIsWeb) {
-      print("Running on Web; skipping permission check.");
-      _initializeBluetooth();
-      return;
-    }
-    bool granted = await _hasBluetoothPermission();
-    if (!granted) {
-      bool userConsent = await _showPermissionDialog();
-      if (userConsent) {
-        var btStatus = await Permission.bluetooth.request();
-        var btScanStatus = await Permission.bluetoothScan.request();
-        var btConnectStatus = await Permission.bluetoothConnect.request();
-        var locStatus = await Permission.locationWhenInUse.request();
+  // File picking functionality
+  Future<void> _showUploadOptions() async {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (BuildContext context) {
+        return Container(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: EdgeInsets.only(bottom: 20),
+                decoration: BoxDecoration(
+                  color: Colors.grey[600],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Text(
+                'Choose Upload Source',
+                style: TextStyle(
+                  color: Colors.green,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 20),
+              _buildUploadOption(
+                icon: Icons.phone_android,
+                title: 'Local Storage',
+                subtitle: 'Pick from device storage',
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickLocalFile();
+                },
+              ),
+              if (_isGoogleDriveConnected || !kIsWeb) ...[
+                SizedBox(height: 12),
+                _buildUploadOption(
+                  icon: Icons.cloud,
+                  title: 'Google Drive',
+                  subtitle: _isGoogleDriveConnected
+                      ? 'Access your Google Drive files'
+                      : 'Sign in to access Google Drive',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _pickFromGoogleDrive();
+                  },
+                ),
+              ],
+              if (Platform.isIOS) ...[
+                SizedBox(height: 12),
+                _buildUploadOption(
+                  icon: Icons.cloud_outlined,
+                  title: 'iCloud Drive',
+                  subtitle: 'Access your iCloud files',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _pickFromICloud();
+                  },
+                ),
+              ],
+              SizedBox(height: 12),
+              _buildUploadOption(
+                icon: Icons.folder_open,
+                title: 'Other Cloud Services',
+                subtitle: 'Dropbox, OneDrive, etc.',
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickFromOtherClouds();
+                },
+              ),
+              SizedBox(height: 20),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
-        print("Bluetooth: $btStatus");
-        print("Bluetooth Scan: $btScanStatus");
-        print("Bluetooth Connect: $btConnectStatus");
-        print("Location: $locStatus");
+  Widget _buildUploadOption({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey[800],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.green.withOpacity(0.3)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: Colors.green, size: 24),
+            ),
+            SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      color: Colors.grey[400],
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.arrow_forward_ios, color: Colors.green, size: 16),
+          ],
+        ),
+      ),
+    );
+  }
 
-        if (btStatus.isGranted &&
-            btScanStatus.isGranted &&
-            btConnectStatus.isGranted &&
-            locStatus.isGranted) {
-          _initializeBluetooth();
-        } else {
-          _showPopup("All required permissions must be granted to continue.");
-        }
-      } else {
-        _showPopup("You must grant the permissions to continue.");
+  Future<void> _pickLocalFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: _supportedExtensions,
+        allowMultiple: false,
+        withData: true,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        await _handleSelectedFile(result.files.first);
       }
-    } else {
-      _initializeBluetooth();
+    } catch (e) {
+      _showErrorDialog('Error selecting local file: $e');
     }
   }
 
-  Future<bool> _hasBluetoothPermission() async {
-    if (kIsWeb) return true;
-    var btStatus = await Permission.bluetooth.status;
-    var btScanStatus = await Permission.bluetoothScan.status;
-    var btConnectStatus = await Permission.bluetoothConnect.status;
-    var locStatus = await Permission.locationWhenInUse.status;
-    print("Current statuses: Bluetooth=$btStatus, Scan=$btScanStatus, Connect=$btConnectStatus, Location=$locStatus");
-    return btStatus.isGranted &&
-        btScanStatus.isGranted &&
-        btConnectStatus.isGranted &&
-        locStatus.isGranted;
+  Future<void> _pickFromGoogleDrive() async {
+    try {
+      // Sign in to Google if not already signed in
+      GoogleSignInAccount? account = _googleSignIn.currentUser;
+      if (account == null) {
+        account = await _googleSignIn.signIn();
+        if (account == null) {
+          _showErrorDialog('Google Sign-In was cancelled');
+          return;
+        }
+      }
+
+      // Get authentication headers
+      final GoogleSignInAuthentication googleAuth = await account.authentication;
+      final AuthClient authClient = authenticatedClient(
+        http.Client(),
+        AccessCredentials(
+          AccessToken('Bearer', googleAuth.accessToken!, DateTime.now().add(Duration(hours: 1))),
+          googleAuth.idToken,
+          [
+            'https://www.googleapis.com/auth/drive.readonly',
+            'https://www.googleapis.com/auth/drive.file',
+          ],
+        ),
+      );
+
+      final drive.DriveApi driveApi = drive.DriveApi(authClient);
+
+      // List CSV files from Google Drive
+      final drive.FileList fileList = await driveApi.files.list(
+        q: "mimeType='text/csv' or name contains '.csv'",
+        pageSize: 50,
+      );
+
+      if (fileList.files?.isEmpty ?? true) {
+        _showErrorDialog('No CSV files found in your Google Drive');
+        return;
+      }
+
+      // Show file selection dialog
+      drive.File? selectedFile = await _showGoogleDriveFileDialog(fileList.files!);
+      if (selectedFile != null) {
+        await _downloadFromGoogleDrive(driveApi, selectedFile);
+      }
+
+    } catch (e) {
+      _showErrorDialog('Error accessing Google Drive: $e');
+    }
   }
 
-  Future<bool> _showPermissionDialog() async {
-    return await showDialog<bool>(
+  Future<drive.File?> _showGoogleDriveFileDialog(List<drive.File> files) async {
+    return await showDialog<drive.File>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+            side: BorderSide(color: Colors.green, width: 2),
+          ),
+          title: Text(
+            'Select Google Drive File',
+            style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+          ),
+          content: Container(
+            width: double.maxFinite,
+            height: 300,
+            child: ListView.builder(
+              itemCount: files.length,
+              itemBuilder: (context, index) {
+                final file = files[index];
+                return ListTile(
+                  leading: Icon(Icons.insert_drive_file, color: Colors.green),
+                  title: Text(
+                    file.name ?? 'Unknown file',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  subtitle: Text(
+                    'Size: ${_formatFileSize(file.size)}',
+                    style: TextStyle(color: Colors.grey[400]),
+                  ),
+                  onTap: () => Navigator.of(context).pop(file),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _downloadFromGoogleDrive(drive.DriveApi driveApi, drive.File file) async {
+    try {
+      setState(() {
+        _uploadStatus = 'Downloading from Google Drive...';
+        _isUploading = true;
+      });
+
+      final drive.Media media = await driveApi.files.get(
+        file.id!,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+
+      final List<int> bytes = <int>[];
+      await for (List<int> chunk in media.stream) {
+        bytes.addAll(chunk);
+      }
+
+      final PlatformFile platformFile = PlatformFile(
+        name: file.name ?? 'google_drive_file.csv',
+        size: bytes.length,
+        bytes: Uint8List.fromList(bytes),
+      );
+
+      await _handleSelectedFile(platformFile);
+
+    } catch (e) {
+      setState(() {
+        _isUploading = false;
+        _uploadStatus = '';
+      });
+      _showErrorDialog('Error downloading from Google Drive: $e');
+    }
+  }
+
+  Future<void> _pickFromICloud() async {
+    try {
+      // On iOS, FilePicker with allowCloudPicking enables iCloud access
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: _supportedExtensions,
+        allowMultiple: false,
+        withData: true,
+        allowCompression: false,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        await _handleSelectedFile(result.files.first);
+      }
+    } catch (e) {
+      _showErrorDialog('Error accessing iCloud: $e');
+    }
+  }
+
+  Future<void> _pickFromOtherClouds() async {
+    try {
+      // Use FilePicker which can access files from various cloud services
+      // when they're available through the system file picker
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: _supportedExtensions,
+        allowMultiple: false,
+        withData: true,
+        allowCompression: false,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        await _handleSelectedFile(result.files.first);
+      }
+    } catch (e) {
+      _showErrorDialog('Error accessing cloud storage: $e');
+    }
+  }
+
+  String _formatFileSize(String? sizeStr) {
+    if (sizeStr == null) return 'Unknown';
+    try {
+      int size = int.parse(sizeStr);
+      if (size < 1024) return '$size B';
+      if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
+      return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
+    } catch (e) {
+      return 'Unknown';
+    }
+  }
+
+  Future<void> _handleSelectedFile(PlatformFile file) async {
+    setState(() {
+      _selectedFile = file;
+      _uploadStatus = 'File selected: ${file.name}';
+    });
+
+    // Validate CSV format
+    if (await _validateCSVFile(file)) {
+      _showUploadConfirmation();
+    } else {
+      _showErrorDialog('Invalid CSV format. Please select a properly formatted CSV file.');
+    }
+  }
+
+  Future<bool> _validateCSVFile(PlatformFile file) async {
+    try {
+      if (file.bytes != null) {
+        String csvContent = String.fromCharCodes(file.bytes!);
+        List<List<dynamic>> csvData = const CsvToListConverter().convert(csvContent);
+        return csvData.isNotEmpty && csvData.first.isNotEmpty;
+      }
+      return false;
+    } catch (e) {
+      print('CSV validation error: $e');
+      return false;
+    }
+  }
+
+  // Upload confirmation dialog
+  void _showUploadConfirmation() {
+    showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text("Permissions Required"),
-          content: const Text(
-              "This action requires Bluetooth and location permissions. Please allow them to proceed."),
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+            side: BorderSide(color: Colors.green, width: 2),
+          ),
+          title: Text(
+            'Upload File',
+            style: TextStyle(
+              color: Colors.green,
+              fontWeight: FontWeight.bold,
+              fontSize: 20,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'File: ${_selectedFile!.name}',
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Size: ${(_selectedFile!.size / 1024).toStringAsFixed(2)} KB',
+                style: TextStyle(color: Colors.grey[400], fontSize: 14),
+              ),
+              SizedBox(height: 16),
+              Text(
+                'This file will be uploaded for analysis. The process may take a few minutes.',
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+            ],
+          ),
           actions: [
             TextButton(
               onPressed: () {
-                Navigator.of(context).pop(false);
+                Navigator.of(context).pop();
+                setState(() {
+                  _selectedFile = null;
+                  _uploadStatus = '';
+                });
               },
-              child: const Text("Cancel",
-                  style: TextStyle(color: Colors.red)),
+              child: Text(
+                'Cancel',
+                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+              ),
             ),
-            TextButton(
+            ElevatedButton(
               onPressed: () {
-                Navigator.of(context).pop(true);
+                Navigator.of(context).pop();
+                _uploadFile();
               },
-              child: const Text("Allow",
-                  style: TextStyle(color: Colors.green)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: Text(
+                'Upload',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         );
       },
-    ) ??
-        false;
+    );
   }
 
-  Future<void> _initializeBluetooth() async {
-    try {
-      print("Starting Bluetooth scan...");
-      setState(() {
-        _isScanning = true;
-      });
-      _availableDevices = await _bluetoothScanner.scanForDevices();
-      print("Found ${_availableDevices.length} devices.");
-    } catch (e) {
-      print("Error during Bluetooth scan: $e");
-      _showPopup("Error scanning for devices: $e");
-    } finally {
-      setState(() {
-        _isScanning = false;
-      });
-    }
-  }
+  // Upload file to Firebase
+  Future<void> _uploadFile() async {
+    if (_selectedFile == null) return;
 
-  // Updated _toggleMockData: when activated, fetch mock data automatically.
-  // void _toggleMockData(bool value) {
-  //   setState(() {
-  //     _useMockData = value;
-  //   });
-  //   if (_useMockData) {
-  //     _fetchData();
-  //   }
-  // }
-
-  Future<void> _connectToDevice(BluetoothDevice device) async {
-    try {
-      print("Connecting to device: ${device.remoteId}");
-      await _bluetoothConnector.connectToDevice(device);
-      setState(() {
-        _connectedDevice = device;
-      });
-      print("Connected to ${device.remoteId}");
-      _showPopup("Connected to ${device.remoteId}");
-    } catch (e) {
-      print("Failed to connect to device: $e");
-      _showPopup("Failed to connect to device: $e");
-      throw Exception("Connection failed");
-    }
-  }
-
-  // --- Session Flow ---
-  void _promptStartSession() {
-    _showPopup("All IMU rods connected. Do you want to start the session?", () {
-      _startSession();
-    });
-  }
-
-  void _startSession() {
-    _startIMUCommunication();
-    setState(() {
-      _sessionStarted = true;
-      _sessionSeconds = 0;
-    });
-    _sessionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        _sessionSeconds++;
-      });
-    });
-  }
-
-  void _stopSession() {
-    _sessionTimer?.cancel();
-    setState(() {
-      _sessionStarted = false;
-    });
-    _showPopup("Session Ended. Do you want to save the data?", () async {
-      await saveCSV(_matrix);
-    });
-  }
-
-  Future<void> _startIMUCommunication() async {
-    if (_connectedDevice == null && !_useMockData) {
-      print("No IMU connected.");
-      _showPopup("No IMU connected. Please connect a Bluetooth device first.");
+    User? currentUser = _auth.currentUser;
+    if (currentUser == null) {
+      _showErrorDialog('Please log in to upload files.');
       return;
     }
+
+    setState(() {
+      _isUploading = true;
+      _uploadProgress = 0.0;
+      _uploadStatus = 'Preparing upload...';
+    });
+
+    _uploadAnimationController.forward();
+
     try {
-      print("Starting IMU communication...");
-      List<List<double>> rawDataMatrix = [];
-      if (_connectedDevice != null) {
-        List<String> receivedData =
-        await _bluetoothCommunicator.startCommunication(_connectedDevice!);
-        rawDataMatrix = receivedData.map((line) {
-          return line
-              .split(',')
-              .map((e) => double.tryParse(e) ?? 0.0)
-              .toList();
-        }).toList();
-      } else if (_useMockData) {
-        print("Using mock IMU data...");
-        await mockDevice.connect();
-        List<MockBluetoothService> services =
-        await mockDevice.discoverServices();
-        // Use readCsvData() to get headers and data together.
-        Map<String, dynamic> csvResult = {};
-        for (var service in services) {
-          for (var characteristic in service.characteristics) {
-            csvResult = await characteristic.readCsvData();
-            // Break after first valid result.
-            break;
-          }
-        }
+      // Create unique filename
+      String fileName = '${currentUser.uid}_${DateTime.now().millisecondsSinceEpoch}_${_selectedFile!.name}';
+
+      // Upload to Firebase Storage
+      Reference storageRef = _storage.ref().child('csv_uploads').child(fileName);
+      UploadTask uploadTask = storageRef.putData(_selectedFile!.bytes!);
+
+      // Monitor upload progress
+      uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
+        double progress = snapshot.bytesTransferred / snapshot.totalBytes;
         setState(() {
-          _parameterNames = csvResult['headers'];
-          rawDataMatrix = csvResult['data'];
+          _uploadProgress = progress;
+          _uploadStatus = 'Uploading... ${(progress * 100).toStringAsFixed(1)}%';
         });
-      }
-      print("Received IMU Data: $rawDataMatrix");
-      if (mounted) {
-        setState(() {
-          _matrix = rawDataMatrix;
-          _showChart = true;
-        });
-      }
-      _showPopup("IMU data received and plotted successfully.");
+      });
+
+      // Wait for upload completion
+      TaskSnapshot snapshot = await uploadTask;
+      String downloadUrl = await snapshot.ref.getDownloadURL();
+
+      // Save metadata to Firestore
+      await _saveUploadMetadata(fileName, downloadUrl, currentUser.uid);
+
+      setState(() {
+        _isUploading = false;
+        _isAnalyzing = true;
+        _uploadStatus = 'Upload complete! Starting analysis...';
+      });
+
+      // Start analysis process
+      await _startAnalysis(fileName, currentUser.uid);
+
     } catch (e) {
-      print("Failed to start communication: $e");
-      _showPopup("Failed to start communication: $e");
+      setState(() {
+        _isUploading = false;
+        _uploadStatus = 'Upload failed';
+      });
+      _uploadAnimationController.reverse();
+      _showErrorDialog('Upload failed: $e');
     }
   }
 
-  Future<void> saveCSV(List<List<double>> data) async {
-    String csvData = const ListToCsvConverter().convert(data);
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/imu_data.csv');
-    await file.writeAsString(csvData);
-    print("CSV file saved at: ${file.path}");
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("CSV saved! Click to open."),
-        action: SnackBarAction(
-          label: "Open",
-          onPressed: () => OpenFile.open(file.path),
-        ),
-      ),
+  Future<void> _saveUploadMetadata(String fileName, String downloadUrl, String userId) async {
+    await _firestore.collection('csv_uploads').add({
+      'fileName': fileName,
+      'originalName': _selectedFile!.name,
+      'downloadUrl': downloadUrl,
+      'userId': userId,
+      'uploadTime': FieldValue.serverTimestamp(),
+      'status': 'uploaded',
+      'fileSize': _selectedFile!.size,
+    });
+  }
+
+  Future<void> _startAnalysis(String fileName, String userId) async {
+    try {
+      // Simulate analysis process (replace with actual analysis trigger)
+      await Future.delayed(Duration(seconds: 3));
+
+      // Update status in Firestore
+      QuerySnapshot uploadDocs = await _firestore
+          .collection('csv_uploads')
+          .where('fileName', isEqualTo: fileName)
+          .where('userId', isEqualTo: userId)
+          .get();
+
+      if (uploadDocs.docs.isNotEmpty) {
+        await uploadDocs.docs.first.reference.update({
+          'status': 'analyzing',
+          'analysisStartTime': FieldValue.serverTimestamp(),
+        });
+      }
+
+      // Listen for analysis completion
+      _listenForAnalysisCompletion(fileName, userId);
+
+      setState(() {
+        _uploadStatus = 'Your session is being analyzed. You will be notified when complete.';
+      });
+
+      _showSuccessDialog();
+
+    } catch (e) {
+      setState(() {
+        _isAnalyzing = false;
+        _uploadStatus = 'Analysis failed to start';
+      });
+      _showErrorDialog('Failed to start analysis: $e');
+    }
+  }
+
+  void _listenForAnalysisCompletion(String fileName, String userId) {
+    _firestore
+        .collection('csv_uploads')
+        .where('fileName', isEqualTo: fileName)
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .listen((QuerySnapshot snapshot) {
+      if (snapshot.docs.isNotEmpty) {
+        DocumentSnapshot doc = snapshot.docs.first;
+        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+
+        if (data['status'] == 'completed') {
+          _handleAnalysisCompletion(data);
+        }
+      }
+    });
+  }
+
+  Future<void> _handleAnalysisCompletion(Map<String, dynamic> analysisData) async {
+    // Show notification
+    await _showNotification(
+      'Analysis Complete',
+      'Your CSV analysis has been completed and saved locally.',
+    );
+
+    // Download and save result locally
+    if (analysisData['resultUrl'] != null) {
+      await _downloadAndSaveResult(analysisData['resultUrl']);
+    }
+
+    setState(() {
+      _isAnalyzing = false;
+      _uploadStatus = 'Analysis complete! Results saved to device.';
+    });
+  }
+
+  Future<void> _downloadAndSaveResult(String resultUrl) async {
+    try {
+      // Get hidden app directory
+      Directory appDir = await getApplicationSupportDirectory();
+      Directory hiddenDir = Directory('${appDir.path}/.analysis_results');
+
+      if (!await hiddenDir.exists()) {
+        await hiddenDir.create(recursive: true);
+      }
+
+      // Download file (this is a placeholder - implement actual download)
+      String fileName = 'analysis_${DateTime.now().millisecondsSinceEpoch}.csv';
+      File resultFile = File('${hiddenDir.path}/$fileName');
+
+      // Placeholder: In real implementation, download from resultUrl
+      await resultFile.writeAsString('Analysis results would be saved here');
+
+      print('Analysis result saved to: ${resultFile.path}');
+
+    } catch (e) {
+      print('Error saving analysis result: $e');
+    }
+  }
+
+  Future<void> _showNotification(String title, String body) async {
+    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+    AndroidNotificationDetails(
+      'analysis_channel',
+      'Analysis Notifications',
+      channelDescription: 'Notifications for analysis completion',
+      importance: Importance.high,
+      priority: Priority.high,
+    );
+
+    const DarwinNotificationDetails iOSPlatformChannelSpecifics =
+    DarwinNotificationDetails();
+
+    const NotificationDetails platformChannelSpecifics = NotificationDetails(
+      android: androidPlatformChannelSpecifics,
+      iOS: iOSPlatformChannelSpecifics,
+    );
+
+    await _notificationsPlugin?.show(
+      0,
+      title,
+      body,
+      platformChannelSpecifics,
     );
   }
 
-  /// Updated: Function to import CSV data.
-  /// This version expects two header rows (discarding the first and using the second as parameter names)
-  /// and then data rows.
-  Future<void> importCSV() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/imu_data.csv');
-    if (await file.exists()) {
-      String csvData = await file.readAsString();
-      List<List<dynamic>> csvList =
-      const CsvToListConverter().convert(csvData);
-      if (csvList.length < 2) {
-        _showPopup("CSV does not contain enough header rows.");
-        return;
-      }
-      setState(() {
-        _parameterNames = csvList[1].map((e) => e.toString()).toList();
-        _matrix = csvList.sublist(2).map((row) {
-          return row.map((e) => double.tryParse(e.toString()) ?? 0.0).toList();
-        }).toList();
-        _showChart = true;
-      });
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("CSV imported successfully!")));
-    } else {
-      _showPopup("No CSV file found at ${file.path}");
-    }
-  }
-
-  /// Updated chart generator:
-  /// Uses the first column as the x-axis (time stamp) and creates one line series for each parameter (columns 1...n).
-  /// Each series is assigned a different color from Colors.primaries and labeled using _parameterNames.
-  List<LineSeries<ChartData, double>> _generateLineSeries() {
-    if (_matrix.isEmpty || _parameterNames.isEmpty) return [];
-    int numColumns = _matrix[0].length; // Total columns (time + parameters)
-    List<LineSeries<ChartData, double>> seriesList = [];
-    // Create one series per parameter (starting from index 1, as index 0 is the time stamp)
-    for (int col = 1; col < numColumns; col++) {
-      List<ChartData> chartData = _matrix.map((row) {
-        double x = row[0]; // Time stamp
-        double y = row[col];
-        return ChartData(x, y);
-      }).toList();
-      Color seriesColor = Colors.primaries[(col - 1) % Colors.primaries.length];
-      seriesList.add(LineSeries<ChartData, double>(
-        dataSource: chartData,
-        xValueMapper: (ChartData data, _) => data.x,
-        yValueMapper: (ChartData data, _) => data.y,
-        color: seriesColor,
-        name: _parameterNames.length > col ? _parameterNames[col] : 'Param $col',
-      ));
-    }
-    return seriesList;
-  }
-
-  // --- Dots, Session, and Popups ---
-  void _onDotClick(int index) async {
-    print("Dot $index clicked.");
-    bool permissionGranted = await _hasBluetoothPermission();
-    if (!permissionGranted) {
-      await Permission.bluetooth.request();
-      await Permission.bluetoothScan.request();
-      await Permission.bluetoothConnect.request();
-      await Permission.locationWhenInUse.request();
-      permissionGranted = await _hasBluetoothPermission();
-      if (!permissionGranted) {
-        _showPopup("Bluetooth and location permissions are required to use this feature.");
-        return;
-      }
-    }
-    await _initializeBluetooth();
-    _showDeviceSelectionBottomSheet(index);
-  }
-
-  Future<void> _showDeviceSelectionBottomSheet(int index) async {
-    await _initializeBluetooth();
-    BluetoothDevice? device = await showModalBottomSheet<BluetoothDevice>(
+  void _showSuccessDialog() {
+    showDialog(
       context: context,
-      backgroundColor: Colors.grey[900],
+      barrierDismissible: false,
       builder: (BuildContext context) {
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              child: const Text(
-                "Available Devices",
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+            side: BorderSide(color: Colors.green, width: 2),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 28),
+              SizedBox(width: 12),
+              Text(
+                'Success!',
                 style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold),
-              ),
-            ),
-            Expanded(
-              child: _availableDevices.isNotEmpty
-                  ? ListView.builder(
-                itemCount: _availableDevices.length,
-                itemBuilder: (context, i) {
-                  final device = _availableDevices[i];
-                  return ListTile(
-                    title: Text(
-                      device.name,
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                    subtitle: Text(
-                      device.id.toString(),
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                    onTap: () {
-                      Navigator.of(context).pop(device);
-                    },
-                  );
-                },
-              )
-                  : const Center(
-                child: Text(
-                  "No devices found.",
-                  style: TextStyle(color: Colors.white),
+                  color: Colors.green,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 20,
                 ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Your CSV file has been uploaded successfully. The analysis is now in progress. You will receive a notification when it\'s complete.',
+            style: TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _resetUploadState();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: Text(
+                'OK',
+                style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
           ],
         );
       },
     );
-
-    if (device != null) {
-      try {
-        await _connectToDevice(device);
-        setState(() {
-          _dotsClicked[index] = true;
-        });
-        if (_dotsClicked.every((clicked) => clicked)) {
-          _promptStartSession();
-        }
-      } catch (e) {
-        _showPopup("Connection failed for dot ${index + 1}.");
-      }
-    }
   }
 
-  // Widget _buildIMUDataDisplay() {
-  //   if (!_showChart || _matrix.isEmpty) {
-  //     return const Center(
-  //       child: Text("No Data Available", style: TextStyle(color: Colors.white)),
-  //     );
-  //   }
-  //   print("Plotting data with ${_generateLineSeries().length} series.");
-  //   return SizedBox(
-  //     height: 300,
-  //     width: double.infinity,
-  //     child: Padding(
-  //       padding: const EdgeInsets.all(8.0),
-  //       child: SfCartesianChart(
-  //         legend: Legend(isVisible: true),
-  //         primaryXAxis: NumericAxis(title: AxisTitle(text: "Time Stamp")),
-  //         primaryYAxis: NumericAxis(title: AxisTitle(text: "Parameter Value")),
-  //         series: _generateLineSeries(),
-  //       ),
-  //     ),
-  //   );
-  // }
-
-  Widget _buildBottomDrawer() {
-    return Container(
-      color: Colors.black54,
-      padding: const EdgeInsets.all(16.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            "Time: $_sessionSeconds s",
-            style: const TextStyle(color: Colors.white, fontSize: 16),
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+            side: BorderSide(color: Colors.red, width: 2),
           ),
-          ElevatedButton(
-            onPressed: _stopSession,
-            child: const Text("Stop Session"),
+          title: Row(
+            children: [
+              Icon(Icons.error, color: Colors.red, size: 28),
+              SizedBox(width: 12),
+              Text(
+                'Error',
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 20,
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+          content: Text(
+            message,
+            style: TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: Text(
+                'OK',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildTrainingContent() {
-    final List<Alignment> dotAlignments = [
-      Alignment(0, 0), // Center
-      Alignment(0.55, -0.35),
-      Alignment(0.78, 0.25),
-      Alignment(0.5, 0.8),
-      Alignment(-0.5, 0.9),
-      Alignment(-0.8, 0.5),
-      Alignment(-0.6, -0.5),
-    ];
+  void _resetUploadState() {
+    setState(() {
+      _selectedFile = null;
+      _isUploading = false;
+      _isAnalyzing = false;
+      _uploadProgress = 0.0;
+      _uploadStatus = '';
+    });
+    _uploadAnimationController.reset();
+  }
 
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: Image.asset(
-            "assets/image/Picsart_24-09-21_04-26-50-144.png",
-            fit: BoxFit.cover,
-          ),
-        ),
-        ...List.generate(7, (index) {
-          return Align(
-            alignment: dotAlignments[index],
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => _onDotClick(index),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                height: 60,
-                width: 60,
-                decoration: BoxDecoration(
-                  color: _dotsClicked[index] ? Colors.green : Colors.red,
-                  borderRadius: BorderRadius.circular(30),
+  Widget _buildUploadArea() {
+    return AnimatedBuilder(
+      animation: _pulseAnimation,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: _isUploading || _isAnalyzing ? 1.0 : _pulseAnimation.value,
+          child: Container(
+            height: 250,
+            width: double.infinity,
+            margin: EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.grey[900],
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: _isUploading || _isAnalyzing
+                    ? Colors.green
+                    : Colors.green.withOpacity(0.5),
+                width: 2,
+                style: BorderStyle.solid,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.green.withOpacity(0.2),
+                  blurRadius: 15,
+                  spreadRadius: 2,
                 ),
+              ],
+            ),
+            child: InkWell(
+              onTap: _isUploading || _isAnalyzing ? null : _showUploadOptions,
+              borderRadius: BorderRadius.circular(20),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (_isUploading || _isAnalyzing) ...[
+                    _buildProgressIndicator(),
+                  ] else ...[
+                    Icon(
+                      Icons.cloud_upload_outlined,
+                      size: 64,
+                      color: Colors.green,
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      'Upload Files',
+                      style: TextStyle(
+                        color: Colors.green,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'Drag or drop files here',
+                      style: TextStyle(
+                        color: Colors.grey[400],
+                        fontSize: 16,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      '— OR —',
+                      style: TextStyle(
+                        color: Colors.grey[500],
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
-          );
-        }),
-        // // Display the chart over the training content.
-        // if (_showChart)
-        //   Align(
-        //     alignment: Alignment.bottomCenter,
-        //     child: Container(
-        //       color: Colors.black54,
-        //       child: _buildIMUDataDisplay(),
-        //     ),
-        //   ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildProgressIndicator() {
+    return Column(
+      children: [
+        if (_isUploading) ...[
+          CircularProgressIndicator(
+            value: _uploadProgress,
+            strokeWidth: 6,
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+            backgroundColor: Colors.grey[700],
+          ),
+          SizedBox(height: 16),
+        ] else if (_isAnalyzing) ...[
+          CircularProgressIndicator(
+            strokeWidth: 6,
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+            backgroundColor: Colors.grey[700],
+          ),
+          SizedBox(height: 16),
+        ],
+        Text(
+          _uploadStatus,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Colors.green,
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
       ],
     );
   }
 
-  void _startZoom() {
-    print("Starting zoom effect.");
-    setState(() {
-      startIsClicked = true;
-      _isAnimating = true;
-      _zoomToDot(_currentDot);
-    });
-  }
-
-  void _zoomToDot(int index) {
-    print("Zooming to dot $index...");
-    _controller.forward();
-  }
-
-  void _resetSessionAfterPopup() {
-    _resetSession();
-  }
-
-  void _resetSession() {
-    print("Resetting session...");
-    setState(() {
-      _isAnimating = false;
-      _currentDot = 0;
-      _dotsClicked.fillRange(0, _dotsClicked.length, false);
-    });
-  }
-
-  Widget _buildDeviceList() {
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: 300),
-      child: ListView.builder(
-        itemCount: _availableDevices.length,
-        itemBuilder: (context, index) {
-          final device = _availableDevices[index];
-          return ListTile(
-            title: Text(
-              device.name,
-              style: const TextStyle(color: Colors.white),
-            ),
-            subtitle: Text(
-              device.id.toString(),
-              style: const TextStyle(color: Colors.grey),
-            ),
-            onTap: () => _connectToDevice(device),
-          );
-        },
+  Widget _buildFileTypeInfo() {
+    return Container(
+      margin: EdgeInsets.symmetric(horizontal: 20),
+      padding: EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[850],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.green.withOpacity(0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.green, size: 20),
+              SizedBox(width: 8),
+              Text(
+                'Supported File Types',
+                style: TextStyle(
+                  color: Colors.green,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            children: _supportedExtensions.map((ext) {
+              return Chip(
+                label: Text(
+                  ext.toUpperCase(),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                backgroundColor: Colors.green.withOpacity(0.2),
+                side: BorderSide(color: Colors.green, width: 1),
+              );
+            }).toList(),
+          ),
+        ],
       ),
     );
-  }
-
-  void _showPopup(String message, [VoidCallback? onDismiss]) {
-    print("Showing popup: $message");
-    showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: Colors.grey.shade900,
-          content: Text(
-            message,
-            style: TextStyle(
-                color: Colors.green.shade600, fontWeight: FontWeight.bold),
-          ),
-          actions: [
-            TextButton(
-              child: const Text(
-                "Done",
-                style: TextStyle(
-                    color: Colors.green, fontWeight: FontWeight.bold),
-              ),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
-    ).then((_) {
-      if (onDismiss != null) {
-        onDismiss();
-      }
-    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text("IMU Analysis Page"),
-        actions: [
-          // Toggle between real and mock data.
-          Switch(
-            value: _useMockData,
-            onChanged: (value) => Null //_toggleMockData(value),
+        title: Text(
+          'Upload Files',
+          style: TextStyle(
+            color: Colors.green,
+            fontWeight: FontWeight.bold,
           ),
-          // Button to import CSV data.
-          IconButton(
-            icon: const Icon(Icons.file_download),
-            onPressed: () async {
-              await importCSV();
-            },
-            tooltip: "Import CSV",
-          ),
-        ],
-        centerTitle: true,
-        backgroundColor: Colors.black,
+        ),
+        backgroundColor: Colors.grey[900],
+        iconTheme: IconThemeData(color: Colors.green),
+        elevation: 0,
       ),
       body: SafeArea(
-        child: Stack(
-          children: [
-            _buildTrainingContent(),
-            if (_sessionStarted)
-              Align(
-                alignment: Alignment.bottomCenter,
-                child: _buildBottomDrawer(),
-              ),
-          ],
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(height: 40),
+              _buildUploadArea(),
+              SizedBox(height: 30),
+              _buildFileTypeInfo(),
+              SizedBox(height: 30),
+            ],
+          ),
         ),
       ),
     );
   }
-}
-
-class ChartData {
-  final double x;
-  final double y;
-  ChartData(this.x, this.y);
 }
