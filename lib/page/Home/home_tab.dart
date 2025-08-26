@@ -13,11 +13,10 @@ import 'package:proswing/page/Home/Progress/Level.dart';
 import 'package:proswing/page/Home/Progress/Efficiency.dart';
 import 'package:proswing/page/Home/Progress/LastSessionAssisment.dart';
 import 'package:proswing/page/Home/LastSessionAssessmentSection.dart';
-//import 'package:proswing/page/Home/joinClassPage.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:proswing/page/login_page.dart';
-import 'package:syncfusion_flutter_charts/charts.dart'; // Syncfusion charts import
+import 'package:syncfusion_flutter_charts/charts.dart';
 
 class HomeScreenPage extends StatefulWidget {
   const HomeScreenPage({super.key});
@@ -27,24 +26,20 @@ class HomeScreenPage extends StatefulWidget {
 }
 
 class _HomeScreenPageState extends State<HomeScreenPage>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final values = [75, 60, 55];
   bool isInTeam = false;
   String teamName = "";
   String createdBy = "";
   bool startIsClicked = false;
 
-  // ignore: unused_field
   late ScrollController _scrollController;
-
   late String greetingMessage = greetingPhrases[1];
   late bool showGreeting = false;
   int _currentIndex = 0;
   DateTime selectedDay = DateTime.now();
   List<String> quotes = [];
   int currentQuoteIndex = 0;
-  late AnimationController _controller;
-  late Animation<double> _fadeInAnimation;
 
   final List<String> greetingPhrases = [
     "How's your day?",
@@ -52,59 +47,104 @@ class _HomeScreenPageState extends State<HomeScreenPage>
     "Hopefully, life has been treating you well."
   ];
 
+  // Training tab variables
+  bool showOptions = false;
+  bool isBottomImageVisible = true;
+
+  // Changed from late to nullable and provide default values
+  AnimationController? _fadeController;
+  AnimationController? _slideController;
+  AnimationController? _pulseController;
+
+  Animation<double>? _fadeAnimation;
+  Animation<Offset>? _slideAnimation;
+  Animation<double>? _pulseAnimation;
+
   @override
   void initState() {
     super.initState();
-    //_loadTeamNames();
     _scrollController = ScrollController();
-    showGreeting = true; // Initially show the greeting
+    showGreeting = true;
+    _setupAnimations();
     _loadAndSetQuotes();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    );
-    _fadeInAnimation =
-        CurvedAnimation(parent: _controller, curve: Curves.easeIn);
-    _controller.forward();
     _startQuoteRotation();
     _startGreetingTimer();
   }
 
+  void _setupAnimations() {
+    _fadeController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
+
+    _slideController = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+
+    _pulseController = AnimationController(
+      duration: const Duration(milliseconds: 2000),
+      vsync: this,
+    );
+
+    _fadeAnimation = CurvedAnimation(
+      parent: _fadeController!,
+      curve: Curves.easeOut,
+    );
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, 0.3),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _slideController!,
+      curve: Curves.easeOutBack,
+    ));
+
+    _pulseAnimation = Tween<double>(
+      begin: 1.0,
+      end: 1.05,
+    ).animate(CurvedAnimation(
+      parent: _pulseController!,
+      curve: Curves.easeInOut,
+    ));
+
+    _fadeController!.forward();
+    _slideController!.forward();
+    _pulseController!.repeat(reverse: true);
+  }
+
   Future<void> _loadAndSetQuotes() async {
     quotes = await loadQuotes();
-    _selectRandomQuote(); // Pick a random quote on load
+    _selectRandomQuote();
     setState(() {});
     _startQuoteRotation();
   }
 
-  // Show greeting for 15 seconds, then switch to quote
   void _startGreetingTimer() {
     Future.delayed(const Duration(seconds: 15), () {
       if (mounted) {
         setState(() {
-          showGreeting = false; // Switch to showing the quote
-          _controller.reset();
-          _controller.forward();
+          showGreeting = false;
+          _fadeController?.reset();
+          _fadeController?.forward();
         });
       }
     });
   }
 
-  // This method selects a random quote
   void _selectRandomQuote() {
     final random = Random();
-    currentQuoteIndex = random.nextInt(quotes.length); // Random index
+    currentQuoteIndex = random.nextInt(quotes.length);
   }
 
-  // Rotates to a random quote every 30 minutes
   void _startQuoteRotation() {
     Future.delayed(const Duration(minutes: 30), () {
       if (mounted) {
         setState(() {
-          _selectRandomQuote(); // Pick a random quote each time
+          _selectRandomQuote();
         });
-        _controller.reset();
-        _controller.forward();
+        _fadeController?.reset();
+        _fadeController?.forward();
         _startQuoteRotation();
       }
     });
@@ -112,14 +152,17 @@ class _HomeScreenPageState extends State<HomeScreenPage>
 
   @override
   void dispose() {
-    _controller.dispose();
+    _scrollController.dispose();
+    _fadeController?.dispose();
+    _slideController?.dispose();
+    _pulseController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF0A0A0A), // Modern dark background
       body: LayoutBuilder(
         builder: (context, constraints) {
           return IndexedStack(
@@ -137,197 +180,402 @@ class _HomeScreenPageState extends State<HomeScreenPage>
   }
 
   Widget _buildHomeContent() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildQuoteRow(),
-          const SizedBox(height: 30),
-          _buildSectionTitle("Your Progress"),
-          const SizedBox(height: 20),
-          _buildProgressCards(),
-          const SizedBox(height: 30),
-          LastSessionAssismentSection(75),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuoteRow() {
-    return FutureBuilder<Map<String, dynamic>?>(
-      future: getUserData(), // Fetch user data from Firestore
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-              child: CircularProgressIndicator()); // Loading state
-        } else if (snapshot.hasError) {
-          return const Text('Error fetching user data');
-        } else if (!snapshot.hasData || snapshot.data == null) {
-          return const Text('No user data found');
-        } else {
-          // Extract the user name from the Firestore data
-          String userName = snapshot.data!['name'] ??
-              'User'; // Use 'User' as a fallback if name is null
-
-          return Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+    return SafeArea(
+      child: _fadeAnimation != null ? FadeTransition(
+        opacity: _fadeAnimation!,
+        child: _slideAnimation != null ? SlideTransition(
+          position: _slideAnimation!,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 10),
+                _buildModernQuoteSection(),
+                const SizedBox(height: 40),
+                _buildModernSectionTitle("Your Progress"),
+                const SizedBox(height: 20),
+                _buildModernProgressCards(),
+                const SizedBox(height: 30),
+                _buildModernLastSessionSection(),
+              ],
+            ),
+          ),
+        ) : SingleChildScrollView(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: FadeTransition(
-                  opacity: _fadeInAnimation,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.only(top: 25.0, right: 10, left: 6.5),
-                    decoration: BoxDecoration(
-                      color: Colors.black,
-                      borderRadius: BorderRadius.circular(8.0),
-                    ),
-                    child: SingleChildScrollView(
-                      // Add scroll view for long quotes
-                      child: Text(
-                        showGreeting
-                            ? "Hi, $userName.\n$greetingMessage"
-                            : (quotes.isNotEmpty &&
-                                    currentQuoteIndex < quotes.length)
-                                ? quotes[currentQuoteIndex]
-                                : 'Loading...',
-                        style: TextStyle(
-                          color: Colors.green.shade300,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          fontStyle: FontStyle.italic,
-                          letterSpacing: 1.2,
-                          shadows: [
-                            Shadow(
-                              blurRadius: 2.2,
-                              color: Colors.grey.withOpacity(0.7),
-                              offset: const Offset(2.0, 2.0),
-                            ),
-                          ],
-                        ),
-                        textAlign: TextAlign.left,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: CircleAvatar(
-                  backgroundColor: Colors.greenAccent.shade100,
-                  child: const Icon(Icons.person, color: Colors.black),
-                ),
-                onPressed: () {
-                  showUserInfo(context);
-                },
-              ),
+              const SizedBox(height: 10),
+              _buildModernQuoteSection(),
+              const SizedBox(height: 40),
+              _buildModernSectionTitle("Your Progress"),
+              const SizedBox(height: 20),
+              _buildModernProgressCards(),
+              const SizedBox(height: 30),
+              _buildModernLastSessionSection(),
             ],
-          );
-        }
-      },
-    );
-  }
-
-  Widget _buildSectionTitle(String title) {
-    return TextButton(
-      onPressed: () {
-        // Open full calendar in a new tab
-        if (title == 'Calendar') {
-          //Navigator.push(
-          //context,
-          //MaterialPageRoute(builder: (context) => MyApp()),
-          //);
-        }
-      },
-      child: Text(
-        title,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
+          ),
+        ),
+      ) : SingleChildScrollView(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 10),
+            _buildModernQuoteSection(),
+            const SizedBox(height: 40),
+            _buildModernSectionTitle("Your Progress"),
+            const SizedBox(height: 20),
+            _buildModernProgressCards(),
+            const SizedBox(height: 30),
+            _buildModernLastSessionSection(),
+          ],
         ),
       ),
     );
   }
 
-  // Build the progress cards using Syncfusion charts for circular progress
-  Widget _buildProgressCards() {
-    return SizedBox(
-      height: 400,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: 1,
-        itemBuilder: (context, index) {
-          return Center(
-            // This centers the ProgressCard in the ListView
-            child: ProgressCard(),
+  Widget _buildModernQuoteSection() {
+    return FutureBuilder<Map<String, dynamic>?>(
+      future: getUserData(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildLoadingCard();
+        } else if (snapshot.hasError) {
+          return _buildErrorCard('Error fetching user data');
+        } else if (!snapshot.hasData || snapshot.data == null) {
+          return _buildErrorCard('No user data found');
+        } else {
+          String userName = snapshot.data!['name'] ?? 'User';
+
+          return Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Colors.green.withOpacity(0.1),
+                  Colors.blue.withOpacity(0.1),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.green.withOpacity(0.2),
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.green.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "Hi, $userName",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      // Fixed FadeTransition with proper null check
+                      _fadeAnimation != null ? FadeTransition(
+                        opacity: _fadeAnimation!,
+                        child: Text(
+                          showGreeting
+                              ? greetingMessage
+                              : (quotes.isNotEmpty && currentQuoteIndex < quotes.length)
+                              ? quotes[currentQuoteIndex]
+                              : 'Loading...',
+                          style: TextStyle(
+                            color: Colors.green.shade300,
+                            fontSize: 16,
+                            fontStyle: FontStyle.italic,
+                            height: 1.4,
+                          ),
+                        ),
+                      ) : Text(
+                        showGreeting
+                            ? greetingMessage
+                            : (quotes.isNotEmpty && currentQuoteIndex < quotes.length)
+                            ? quotes[currentQuoteIndex]
+                            : 'Loading...',
+                        style: TextStyle(
+                          color: Colors.green.shade300,
+                          fontSize: 16,
+                          fontStyle: FontStyle.italic,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                GestureDetector(
+                  onTap: () => showUserInfo(context),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.green, Colors.teal],
+                      ),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.green.withOpacity(0.3),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.person,
+                      color: Colors.white,
+                      size: 24,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           );
-        },
+        }
+      },
+    );
+  }
+
+  Widget _buildLoadingCard() {
+    return Container(
+      width: double.infinity,
+      height: 120,
+      decoration: BoxDecoration(
+        color: Colors.grey[800],
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: const Center(
+        child: CircularProgressIndicator(
+          color: Colors.green,
+          strokeWidth: 2,
+        ),
       ),
     );
   }
 
-//TRAINING TAB__________________________________________________________________________________________________________________________________________________//
-  bool showOptions = false; // Persistent variable to retain state
-  bool isBottomImageVisible =
-      true; // Control the visibility of the bottom image
-
-  Future<void> _onStartSession() async {
-    if (!showOptions) {
-      setState(() {
-        showOptions =
-            true; // Show options only when the second image is pressed
-      });
-    }
+  Widget _buildErrorCard(String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.red.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.red.withOpacity(0.3)),
+      ),
+      child: Text(
+        message,
+        style: const TextStyle(color: Colors.red),
+        textAlign: TextAlign.center,
+      ),
+    );
   }
 
-  Widget _buildTrainingContent() {
-    return Scaffold(
-      backgroundColor: Colors.black, // Dark background
-      body: Column(
-        children: [
-          // Display Image at the Top (first image - non-pressable)
-          const SizedBox(height: 50),
-          AnimatedContainer(
-            duration: Duration(milliseconds: 200),
-            curve: Curves.easeInOut,
-            width: 200,
-            height: 250,
-            decoration: BoxDecoration(
-              image: DecorationImage(
-                image: AssetImage("assets/image/1738577169848.png"),
-                fit: BoxFit.cover,
-              ),
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.6),
-                  offset: Offset(4, 4),
-                  blurRadius: 6,
-                ),
-              ],
-            ),
+  Widget _buildModernSectionTitle(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 28,
+        fontWeight: FontWeight.bold,
+        letterSpacing: -1,
+      ),
+    );
+  }
+
+  Widget _buildModernProgressCards() {
+    return _pulseAnimation != null ? AnimatedBuilder(
+      animation: _pulseAnimation!,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: _pulseAnimation!.value,
+          child: Container(
+            height: 450,
+            child: ModernProgressCard(values: values),
           ),
-          Expanded(
-            child: Center(
-              child: showOptions
-                  ? _buildChoiceButtons() // Show options only after the bottom image is pressed
-                  : SizedBox.shrink(), // No buttons shown before image press
-            ),
+        );
+      },
+    ) : Container(
+      height: 450,
+      child: ModernProgressCard(values: values),
+    );
+  }
+
+  Widget _buildModernLastSessionSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.purple.withOpacity(0.1),
+            Colors.blue.withOpacity(0.1),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: Colors.purple.withOpacity(0.2),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.purple.withOpacity(0.1),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(colors: [Colors.purple, Colors.pink]),
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.purple.withOpacity(0.3),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.analytics_rounded,
+                  color: Colors.white,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 16),
+              const Text(
+                "Last Session Assessment",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: -0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          LastSessionAssismentSection(55),
+        ],
+      ),
+    );
+  }
+
+  // Training Content with Camera Page Style
+  Widget _buildTrainingContent() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0A0A),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Modern header
+            Container(
+              padding: const EdgeInsets.all(24),
+              child: const Text(
+                "Training Session",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: -1,
+                ),
+              ),
+            ),
+
+            // Hero image with modern styling
+            const SizedBox(height: 20),
+            TweenAnimationBuilder(
+              duration: const Duration(milliseconds: 1000),
+              tween: Tween<double>(begin: 0, end: 1),
+              builder: (context, double value, child) {
+                return Transform.scale(
+                  scale: value,
+                  child: Container(
+                    width: 250,
+                    height: 300,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.transparent,
+                          blurRadius: 30,
+                          offset: const Offset(0, 15),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Image.asset(
+                        "assets/image/1738577169848.png",
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+
+            Expanded(
+              child: Center(
+                child: showOptions
+                    ? _buildModernChoiceButtons()
+                    : const SizedBox.shrink(),
+              ),
+            ),
+          ],
+        ),
+      ),
       bottomNavigationBar: Visibility(
-        visible:
-            isBottomImageVisible, // Image is visible when isBottomImageVisible is true
+        visible: isBottomImageVisible,
         child: GestureDetector(
-          onTap: _onBottomImagePressed, // When tapped, hide the bottom image
+          onTap: _onBottomImagePressed,
           child: Container(
-            width: double.infinity,
-            height: 100,
+            margin: const EdgeInsets.all(20),
+            height: 80,
             decoration: BoxDecoration(
-              image: DecorationImage(
-                image: AssetImage("assets/image/1738577174871.png"),
+              borderRadius: BorderRadius.circular(20),
+              gradient: LinearGradient(
+                colors: [Colors.transparent, Colors.transparent],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.transparent,
+                  blurRadius: 0,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: Image.asset(
+                "assets/image/1738577174871.png",
                 fit: BoxFit.contain,
               ),
             ),
@@ -337,45 +585,133 @@ class _HomeScreenPageState extends State<HomeScreenPage>
     );
   }
 
-  Widget _buildChoiceButtons() {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Text(
-          "Choose your option:",
-          style: TextStyle(
-            color: Colors.greenAccent,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
+  Widget _buildModernChoiceButtons() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Text(
+            "Choose Your Training",
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              letterSpacing: -0.5,
+            ),
           ),
-        ),
-        const SizedBox(height: 20),
-        _buildOptionButton("Use Camera", _openCameraPage),
-        const SizedBox(height: 12),
-        _buildOptionButton("Use IMUs", _openImusPage),
-      ],
+          const SizedBox(height: 12),
+          Text(
+            "Select your preferred training method",
+            style: TextStyle(
+              color: Colors.grey[400],
+              fontSize: 16,
+            ),
+          ),
+          const SizedBox(height: 40),
+          _buildModernOption(
+            title: "Camera Analysis",
+            description: "AI-powered video analysis",
+            icon: Icons.videocam_rounded,
+            gradient: [Colors.green, Colors.teal],
+            onTap: _openCameraPage,
+          ),
+          const SizedBox(height: 20),
+          _buildModernOption(
+            title: "IMU Analysis",
+            description: "Motion sensor analysis",
+            icon: Icons.sensors_rounded,
+            gradient: [Colors.blue, Colors.purple],
+            onTap: _openImusPage,
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildOptionButton(String title, VoidCallback onPressed) {
-    return ElevatedButton(
-      onPressed: () {
-        setState(() {
-          showOptions = false; // Reset options visibility after navigation
-          isBottomImageVisible = true; // Make the bottom image visible again
-        });
-        onPressed();
-      },
-      style: ElevatedButton.styleFrom(
-        backgroundColor: Colors.green.shade400,
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 60),
-      ),
-      child: Text(
-        title,
-        style: const TextStyle(
-          color: Colors.black,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
+  Widget _buildModernOption({
+    required String title,
+    required String description,
+    required IconData icon,
+    required List<Color> gradient,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(5),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: gradient.map((c) => c.withOpacity(0.1)).toList(),
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: gradient.first.withOpacity(0.2),
+            width: 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: gradient.first.withOpacity(0.1),
+              blurRadius: 20,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: gradient),
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: gradient.first.withOpacity(0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Icon(
+                icon,
+                color: Colors.white,
+                size: 28,
+              ),
+            ),
+            const SizedBox(width: 20),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    description,
+                    style: TextStyle(
+                      color: Colors.grey[400],
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              color: Colors.grey[500],
+              size: 18,
+            ),
+          ],
         ),
       ),
     );
@@ -383,8 +719,8 @@ class _HomeScreenPageState extends State<HomeScreenPage>
 
   void _onBottomImagePressed() {
     setState(() {
-      isBottomImageVisible = false; // Hide the bottom image when pressed
-      showOptions = true; // Show options after the bottom image is pressed
+      isBottomImageVisible = false;
+      showOptions = true;
     });
   }
 
@@ -393,24 +729,16 @@ class _HomeScreenPageState extends State<HomeScreenPage>
       context: context,
       builder: (context) {
         return FutureBuilder(
-          future: getUserData(), // Fetch user data from Firestore
+          future: getUserData(),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(
-                  child: CircularProgressIndicator()); // Loading state
+              return const Center(child: CircularProgressIndicator());
             } else if (snapshot.hasError) {
-              return const AlertDialog(
-                content: Text('Error fetching user data'),
-              );
+              return const AlertDialog(content: Text('Error fetching user data'));
             } else if (!snapshot.hasData || snapshot.data == null) {
-              return const AlertDialog(
-                content: Text('No user data found'),
-              );
+              return const AlertDialog(content: Text('No user data found'));
             } else {
-              // Extract the username from Firestore data
               String userName = snapshot.data!['name'] ?? 'User';
-
-              // Navigate to CameraPage with the username
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 Navigator.push(
                   context,
@@ -419,14 +747,11 @@ class _HomeScreenPageState extends State<HomeScreenPage>
                   ),
                 ).then((_) {
                   setState(() {
-                    showOptions = false; // Reset options when returning
-                    isBottomImageVisible =
-                        true; // Make bottom image visible again
+                    showOptions = false;
+                    isBottomImageVisible = true;
                   });
                 });
               });
-
-              // Close the dialog
               Navigator.of(context).pop();
               return SizedBox.shrink();
             }
@@ -442,178 +767,151 @@ class _HomeScreenPageState extends State<HomeScreenPage>
       MaterialPageRoute(builder: (context) => ImuAnalysisPage()),
     ).then((_) {
       setState(() {
-        showOptions = false; // Reset options when returning
-        isBottomImageVisible = true; // Make bottom image visible again
+        showOptions = false;
+        isBottomImageVisible = true;
       });
     });
   }
 
-//MORE TAB____________________________________________________________________________________________________________________________________________________//
+  // Modern More Tab
   Widget _buildMoreContent() {
-    return Container(
-      padding: const EdgeInsets.only(top: 40.0),
-      height: MediaQuery.of(context).size.height, // Full screen height
-      child: SingleChildScrollView(
+    return SafeArea(
+      child: _fadeAnimation != null ? FadeTransition(
+        opacity: _fadeAnimation!,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 20),
+              const Text(
+                "Profile & Settings",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: -1,
+                ),
+              ),
+              const SizedBox(height: 30),
+              _buildModernUserCard(),
+              const SizedBox(height: 30),
+              _buildModernSettingsSection(),
+            ],
+          ),
+        ),
+      ) : SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // User Card Section
-            _buildUserCardSection(),
-
-            const SizedBox(height: 230),
-
-            // Settings and Information Section
-            _buildSettingsSection(),
+            const SizedBox(height: 20),
+            const Text(
+              "Profile & Settings",
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                letterSpacing: -1,
+              ),
+            ),
+            const SizedBox(height: 30),
+            _buildModernUserCard(),
+            const SizedBox(height: 30),
+            _buildModernSettingsSection(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildUserCardSection() {
-    String getPlayerLevel(double value) {
-      if (value <= 4) {
-        return 'Beginner';
-      } else if (value <= 7) {
-        return 'Intermediate';
-      } else {
-        return 'Professional';
-      }
-    }
-
+  Widget _buildModernUserCard() {
     return FutureBuilder<Map<String, dynamic>?>(
-      future: getUserData(), // Fetch user data from Firestore
+      future: getUserData(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-              child:
-                  CircularProgressIndicator()); // Show loading spinner while fetching data
-        } else if (snapshot.hasError) {
-          return const Text('Error fetching user data');
-        } else if (!snapshot.hasData || snapshot.data == null) {
-          return const Text('No user data found');
+          return _buildLoadingCard();
+        } else if (snapshot.hasError || !snapshot.hasData) {
+          return _buildErrorCard('Error loading user data');
         } else {
-          // Extract user data from Firestore
-          String userName = snapshot.data!['name'] ?? 'User Name';
-          String email = snapshot.data!['email'] ?? 'user@example.com';
-          String phone = snapshot.data!['phone'] ?? '+123456789';
-          int height =
-              snapshot.data!['height'] ?? 000; // Assuming height is also stored
-          int weight =
-              snapshot.data!['weight'] ?? 000; // Assuming weight is also stored
-          String gender = snapshot.data!['gender'] ??
-              'Unknown'; // Assuming gender is also stored
-          var value = values[0] /
-              10; // User's current level value (assuming this comes from somewhere)
-          String level = getPlayerLevel(
-              value); // Assuming the level is calculated or stored elsewhere
-
-          return Center(
-            child: FractionallySizedBox(
-              widthFactor: 0.9, // 90% of the screen width
-              child: Card(
-                color: Colors.grey[850],
-                elevation: 5,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+          final userData = snapshot.data!;
+          return Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Colors.blue.withOpacity(0.1),
+                  Colors.purple.withOpacity(0.1),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.blue.withOpacity(0.2),
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.blue.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          CircleAvatar(
-                            radius:
-                                38.5, // Adjusted size to make the avatar more prominent
-                            backgroundColor: Colors.greenAccent.shade100,
-                            child:
-                                const Icon(Icons.person, color: Colors.black),
-                          ),
-                          const SizedBox(
-                              width: 16), // Spacing between avatar and text
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                userName, // User's actual name
-                                style: TextStyle(
-                                  color: Colors.green.shade400,
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              Container(
-                                height: 2,
-                                width: 200, // Height of the line
-                                color: Colors.white, // Color of the line
-                                margin: const EdgeInsets.symmetric(vertical: 4),
-                              ),
-                            ],
+              ],
+            ),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(colors: [Colors.blue, Colors.purple]),
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.blue.withOpacity(0.3),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
                           ),
                         ],
                       ),
-                      const SizedBox(
-                          height: 10), // Spacing before other details
-                      Text(
-                        'Email: $email', // User's actual email
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
+                      child: const Icon(Icons.person, color: Colors.white, size: 32),
+                    ),
+                    const SizedBox(width: 20),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            userData['name'] ?? 'User Name',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: -0.5,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            userData['email'] ?? 'user@example.com',
+                            style: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 16,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Phone: $phone', // User's actual phone number
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Height: $height cm', // User's actual height
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Weight: $weight kg', // User's actual weight
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Gender: $gender', // User's actual gender
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Current Level: $level $value', // User's current level value
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                      ListTile(
-                        leading:
-                            Icon(Icons.logout, color: Colors.green.shade400),
-                        title: const Text('Sign Out',
-                            style: TextStyle(color: Colors.white)),
-                        onTap: () async {
-                          // Handle profile modification logic here
-                          await FirebaseAuth.instance.signOut();
-                          Navigator.of(context).pop(); // Close the modal
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text('Signed out successfully')),
-                          );
-                          Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (builder) => const LoginPage()));
-                        },
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ),
+                const SizedBox(height: 24),
+                _buildUserInfoRow('Phone', userData['phone'] ?? '+123456789', Icons.phone),
+                _buildUserInfoRow('Height', '${userData['height'] ?? 0} cm', Icons.height),
+                _buildUserInfoRow('Weight', '${userData['weight'] ?? 0} kg', Icons.monitor_weight),
+                _buildUserInfoRow('Gender', userData['gender'] ?? 'Unknown', Icons.person_outline),
+              ],
             ),
           );
         }
@@ -621,56 +919,170 @@ class _HomeScreenPageState extends State<HomeScreenPage>
     );
   }
 
-  Widget _buildSettingsSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ListTile(
-          leading: Icon(Icons.edit, color: Colors.green.shade400),
-          title: const Text('Modify Profile',
-              style: TextStyle(color: Colors.white)),
-          onTap: () {
-            // Handle profile modification logic here
-          },
-        ),
-        ListTile(
-          leading: Icon(Icons.settings, color: Colors.green.shade400),
-          title: const Text('Personalization',
-              style: TextStyle(color: Colors.white)),
-          onTap: () {
-            // Handle personalization logic here
-          },
-        ),
-        ListTile(
-          leading: Icon(Icons.help, color: Colors.green.shade400),
-          title: const Text('Help & Support',
-              style: TextStyle(color: Colors.white)),
-          onTap: () {
-            // Open external link for help and support
-            _launchURL('https://example.com/help_support');
-          },
-        ),
-        ListTile(
-          leading: Icon(Icons.description, color: Colors.green.shade400),
-          title: const Text('Terms & Conditions',
-              style: TextStyle(color: Colors.white)),
-          onTap: () {
-            // Show terms and conditions in a flying box
-            _showTermsAndConditions();
-          },
-        ),
-        ListTile(
-          leading: Icon(Icons.info, color: Colors.green.shade400),
-          title: const Text('About Us', style: TextStyle(color: Colors.white)),
-          onTap: () {
-            // Show about us in a flying card
-            _showAboutUs();
-          },
-        ),
-      ],
+  Widget _buildUserInfoRow(String label, String value, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.grey[400], size: 20),
+          const SizedBox(width: 12),
+          Text(
+            '$label: ',
+            style: TextStyle(
+              color: Colors.grey[400],
+              fontSize: 16,
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
+  Widget _buildModernSettingsSection() {
+    final settingsOptions = [
+      {'title': 'Modify Profile', 'icon': Icons.edit, 'action': () {}},
+      {'title': 'Personalization', 'icon': Icons.settings, 'action': () {}},
+      {'title': 'Help & Support', 'icon': Icons.help, 'action': () => _launchURL('https://example.com/help_support')},
+      {'title': 'Terms & Conditions', 'icon': Icons.description, 'action': () => _showTermsAndConditions()},
+      {'title': 'About Us', 'icon': Icons.info, 'action': () => _showAboutUs()},
+      {'title': 'Sign Out', 'icon': Icons.logout, 'action': () => _signOut()},
+    ];
+
+    return Column(
+      children: settingsOptions.map((option) {
+        final isSignOut = option['title'] == 'Sign Out';
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: GestureDetector(
+            onTap: option['action'] as VoidCallback,
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: isSignOut
+                    ? Colors.red.withOpacity(0.1)
+                    : Colors.grey[800]?.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isSignOut
+                      ? Colors.red.withOpacity(0.3)
+                      : Colors.grey.withOpacity(0.2),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    option['icon'] as IconData,
+                    color: isSignOut ? Colors.red : Colors.green.shade400,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      option['title'] as String,
+                      style: TextStyle(
+                        color: isSignOut ? Colors.red : Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    Icons.arrow_forward_ios_rounded,
+                    color: Colors.grey[500],
+                    size: 16,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  // Bottom Navigation Bar with modern style
+  Widget _buildBottomNavigationBar() {
+    return Container(
+      margin: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.grey[900]!,
+            Colors.grey[800]!,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(25),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(25),
+        child: BottomNavigationBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          currentIndex: _currentIndex,
+          selectedItemColor: Colors.green.shade300,
+          unselectedItemColor: Colors.grey,
+          type: BottomNavigationBarType.fixed,
+          items: [
+            _buildNavItem(Icons.home_rounded, 'Home', 0),
+            _buildNavItem(Icons.sports_tennis_rounded, 'Training', 1),
+            _buildNavItem(Icons.person_rounded, 'Profile', 2),
+          ],
+          onTap: (index) {
+            setState(() {
+              _currentIndex = index;
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  BottomNavigationBarItem _buildNavItem(IconData icon, String label, int index) {
+    final isSelected = _currentIndex == index;
+    return BottomNavigationBarItem(
+      icon: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          gradient: isSelected
+              ? LinearGradient(colors: [Colors.green, Colors.teal])
+              : null,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: isSelected
+              ? [
+            BoxShadow(
+              color: Colors.green.withOpacity(0.3),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ]
+              : null,
+        ),
+        child: Icon(
+          icon,
+          color: isSelected ? Colors.white : Colors.grey,
+          size: 24,
+        ),
+      ),
+      label: label,
+    );
+  }
+
+  // Helper methods
   Future<void> _launchURL(String url) async {
     final Uri uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
@@ -681,233 +1093,291 @@ class _HomeScreenPageState extends State<HomeScreenPage>
   }
 
   void _showTermsAndConditions() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Terms & Conditions',
-              style: TextStyle(color: Colors.white)),
-          content: const Text('Your terms and conditions go here.',
-              style: TextStyle(color: Colors.white)),
-          backgroundColor: Colors.grey[850],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-          actions: [
-            TextButton(
-              child: const Text('Close', style: TextStyle(color: Colors.green)),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
+    _showModernDialog(
+      title: 'Terms & Conditions',
+      content: 'Your terms and conditions go here. This is a placeholder text for the actual terms and conditions that users need to agree to.',
+      icon: Icons.description_rounded,
     );
   }
 
   void _showAboutUs() {
+    _showModernDialog(
+      title: 'About Us',
+      content: 'ProSwing is a cutting-edge sports analysis app that helps athletes improve their performance through AI-powered motion analysis and personalized training recommendations.',
+      icon: Icons.info_rounded,
+    );
+  }
+
+  void _showModernDialog({
+    required String title,
+    required String content,
+    required IconData icon,
+  }) {
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('About Us', style: TextStyle(color: Colors.white)),
-          content: const Text('A brief summary about us goes here.',
-              style: TextStyle(color: Colors.white)),
-          backgroundColor: Colors.grey[850],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-          actions: [
-            TextButton(
-              child: const Text('Close', style: TextStyle(color: Colors.green)),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.grey[900],
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
             ),
-          ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: [Colors.blue, Colors.purple]),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    icon,
+                    color: Colors.white,
+                    size: 32,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  content,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.grey[400],
+                    fontSize: 16,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 32),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text(
+                    "Close",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
   }
 
-//BOTTOM NAVIGATION BAR_____________________________________________________________________________________________________________________________________________________________________//
-  Widget _buildBottomNavigationBar() {
-    final double screenWidth = MediaQuery.of(context).size.width;
-    final double bottomBarWidth = screenWidth * 0.95;
-
-    return BottomAppBar(
-      height: 110,
-      shadowColor: Colors.transparent,
-      surfaceTintColor: Colors.transparent,
-      color: Colors.transparent,
-      child: Container(
-        width: bottomBarWidth,
-        decoration: BoxDecoration(
-          color: Colors.grey.shade900,
-          borderRadius: const BorderRadius.vertical(
-            top: Radius.circular(100),
-            bottom: Radius.circular(100),
-          ),
-        ),
-        child: BottomNavigationBar(
+  void _signOut() async {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
           backgroundColor: Colors.transparent,
-          elevation: 30,
-          currentIndex: _currentIndex,
-          items: [
-            _buildNavItem(Icons.home, 'Home', 0),
-            _buildNavItem(Icons.sports_tennis_sharp, 'Training', 1),
-            _buildNavItem(Icons.more_horiz, 'More', 2),
-          ],
-          onTap: (index) async {
-            setState(() {
-              _currentIndex = index;
-              _controller.reset();
-              _controller.forward();
-            });
-
-            // if (index == 1) {
-            //   await _onStartSession(); // Wait for _onStartSession to complete
-            //   setState(() {
-            //     _currentIndex = 0; // Redirect to Home tab
-            //   });
-            // }
-          },
-          selectedItemColor: Colors.green.shade200,
-          unselectedItemColor: Colors.grey,
-        ),
-      ),
-    );
-  }
-
-  BottomNavigationBarItem _buildNavItem(
-      IconData icon, String label, int index) {
-    return BottomNavigationBarItem(
-      icon: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, child) {
-          final bool isSelected = _currentIndex == index;
-          return Container(
+          child: Container(
+            padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-              boxShadow: isSelected
-                  ? [
-                      BoxShadow(
-                        color: Colors.black38.withOpacity(0.5), // Shadow color
-                        offset: Offset(0, 8), // Shadow offset
-                        blurRadius: 45, // Shadow blur radius
-                        spreadRadius: 5, // Shadow spread radius
-                      ),
-                    ]
-                  : [],
+              color: Colors.grey[900],
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Transform.scale(
-                  scale: isSelected
-                      ? Tween<double>(begin: 1.0, end: 1.2)
-                          .animate(_controller)
-                          .value
-                      : 1.0,
-                  child: Icon(icon,
-                      color: isSelected ? Colors.green.shade200 : Colors.grey),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.logout_rounded,
+                    color: Colors.red,
+                    size: 32,
+                  ),
                 ),
-                if (isSelected)
-                  AnimatedOpacity(
-                    opacity: isSelected ? 1.0 : 0.0,
-                    duration: Duration(milliseconds: 300),
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 5.0),
-                      child: Text(
-                        label,
-                        style: TextStyle(color: Colors.green.shade200),
+                const SizedBox(height: 20),
+                const Text(
+                  "Sign Out?",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  "Are you sure you want to sign out of your account?",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.grey[400],
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          "Cancel",
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          await FirebaseAuth.instance.signOut();
+                          Navigator.of(context).pop();
+                          Navigator.pushReplacement(
+                            context,
+                            MaterialPageRoute(builder: (context) => const LoginPage()),
+                          );
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          "Sign Out",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
-          );
-        },
-      ),
-      label: '',
+          ),
+        );
+      },
     );
   }
 
   void showUserInfo(BuildContext context) async {
-    // Get the current user
     User? currentUser = FirebaseAuth.instance.currentUser;
 
     if (currentUser != null) {
-      // Fetch user info from Firestore
       DocumentSnapshot userDoc = await FirebaseFirestore.instance
           .collection('users')
           .doc(currentUser.uid)
           .get();
 
       if (userDoc.exists) {
-        // Extract user data
         String userName = userDoc['name'] ?? 'No name available';
         String userEmail = userDoc['email'] ?? 'No email available';
         String userPhone = userDoc['phone'] ?? 'No phone number available';
 
         showModalBottomSheet(
           context: context,
+          backgroundColor: Colors.transparent,
           builder: (context) {
             return Container(
-              color: Colors.grey.shade900,
-              padding: const EdgeInsets.all(20.0),
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.grey[900],
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 20,
+                    offset: const Offset(0, -8),
+                  ),
+                ],
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[600],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
                   Text(
                     'User Information',
                     style: TextStyle(
-                      fontSize: 18,
+                      fontSize: 20,
                       fontWeight: FontWeight.bold,
-                      color: Colors.green.shade100,
+                      color: Colors.green.shade300,
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  ListTile(
-                    leading:
-                        Icon(Icons.person, color: Colors.greenAccent.shade100),
-                    title: Text('Name: $userName',
-                        style: const TextStyle(color: Colors.white)),
-                  ),
-                  ListTile(
-                    leading:
-                        Icon(Icons.email, color: Colors.greenAccent.shade100),
-                    title: Text('Email: $userEmail',
-                        style: const TextStyle(color: Colors.white)),
-                  ),
-                  ListTile(
-                    leading:
-                        Icon(Icons.phone, color: Colors.greenAccent.shade100),
-                    title: Text('Phone: $userPhone',
-                        style: const TextStyle(color: Colors.white)),
-                  ),
+                  const SizedBox(height: 20),
+                  _buildInfoTile(Icons.person, 'Name', userName),
+                  _buildInfoTile(Icons.email, 'Email', userEmail),
+                  _buildInfoTile(Icons.phone, 'Phone', userPhone),
                   const SizedBox(height: 20),
                   ElevatedButton(
-                    onPressed: () async {
-                      // Sign out the user
-                      await FirebaseAuth.instance.signOut();
-                      Navigator.of(context).pop(); // Close the modal
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                            content: Text('Signed out successfully')),
-                      );
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (builder) => const LoginPage()));
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      _signOut();
                     },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.redAccent,
+                      backgroundColor: Colors.red,
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 32),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     child: const Text(
                       'Sign Out',
                       style: TextStyle(
-                        color: Colors.white, // Set the text color to white
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
@@ -927,184 +1397,225 @@ class _HomeScreenPageState extends State<HomeScreenPage>
       );
     }
   }
-}
 
-class FullCardContentScreen extends StatelessWidget {
-  final String title;
-  final int value;
-
-  const FullCardContentScreen({
-    super.key,
-    required this.title,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.green,
-        title: Text(title),
-      ),
-      body: Center(
-        child: Text(
-          '$title: $value%',
-          style: const TextStyle(fontSize: 24, color: Colors.green),
-        ),
+  Widget _buildInfoTile(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.green.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              icon,
+              color: Colors.green.shade400,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: Colors.grey[400],
+                    fontSize: 12,
+                  ),
+                ),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
+// Modern Progress Card Component
+class ModernProgressCard extends StatelessWidget {
+  final List<int> values;
+  final List<String> titles = ["Level", "Efficiency"];
+  final List<Color> colors = [
+    Colors.green,
+    Colors.purple,
+  ];
+
+  ModernProgressCard({Key? key, required this.values}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.grey[850]!.withOpacity(0.8),
+            Colors.grey[800]!.withOpacity(0.8),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: Colors.grey.withOpacity(0.2),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Expanded(
+            child: SfCircularChart(
+              annotations: <CircularChartAnnotation>[
+                CircularChartAnnotation(
+                  widget: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(colors: [Colors.green, Colors.teal]),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.green.withOpacity(0.3),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.person_rounded,
+                      size: 24,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+              series: <RadialBarSeries<int, String>>[
+                RadialBarSeries<int, String>(
+                  dataSource: [values[0]],
+                  xValueMapper: (_, __) => titles[0],
+                  yValueMapper: (int data, _) => data,
+                  pointColorMapper: (_, __) => colors[0],
+                  radius: '110%',
+                  innerRadius: '75%',
+                  maximumValue: 100,
+                  cornerStyle: CornerStyle.bothCurve,
+                ),
+                RadialBarSeries<int, String>(
+                  dataSource: [values[1]],
+                  xValueMapper: (_, __) => titles[1],
+                  yValueMapper: (int data, _) => data,
+                  pointColorMapper: (_, __) => colors[1],
+                  radius: '72%',
+                  innerRadius: '60%',
+                  maximumValue: 100,
+                  cornerStyle: CornerStyle.bothCurve,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              childAspectRatio: 3,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+            ),
+            itemCount: titles.length,
+            itemBuilder: (context, index) {
+              return GestureDetector(
+                onTap: () => _navigateToDetail(context, index),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: colors[index].withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: colors[index].withOpacity(0.3),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.circle,
+                        color: colors[index],
+                        size: 12,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          titles[index],
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        Icons.arrow_forward_ios_rounded,
+                        color: Colors.grey[500],
+                        size: 14,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _navigateToDetail(BuildContext context, int index) {
+    if (titles[index] == "Level") {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => LevelPage(values[0]),
+        ),
+      );
+    } else if (titles[index] == "Efficiency") {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => Efficiency(
+            value: values[1],
+            userLevel: values[0],
+          ),
+        ),
+      );
+    }
+  }
+}
+
+// Keep the existing helper functions
 Future<List<String>> loadQuotes() async {
   final rawData = await rootBundle.loadString('assets/quotes.csv');
   final List<List<dynamic>> csvTable =
-      const CsvToListConverter().convert(rawData);
+  const CsvToListConverter().convert(rawData);
   return csvTable.map((row) => row[0] as String).toList();
-}
-
-class ProgressCard extends StatelessWidget {
-  final List<String> titles = ["Level", "Efficiency"];
-  final List<int?> values = [80, 60, 55]; // Example values
-  final List<Color> colors = [
-    Colors.green.shade400,
-    Colors.purple.shade500
-  ]; // Colors for each radial bar
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 400,
-      height: 500,
-      child: Card(
-        color: Colors.grey[850],
-        elevation: 5,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(15),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              Expanded(
-                child: SfCircularChart(
-                  annotations: <CircularChartAnnotation>[
-                    CircularChartAnnotation(
-                      widget: Icon(
-                        Icons.person,
-                        size: 30,
-                        color: Colors.green.shade600,
-                      ),
-                    ),
-                  ],
-                  series: <RadialBarSeries<int, String>>[
-                    RadialBarSeries<int, String>(
-                      dataSource: [values[0] ?? 0],
-                      xValueMapper: (_, __) => titles[0],
-                      yValueMapper: (int? data, _) => data ?? 0,
-                      pointColorMapper: (_, __) => colors[0],
-                      radius: '110%',
-                      innerRadius: '75%',
-                      maximumValue: 100,
-                      cornerStyle: CornerStyle.bothCurve,
-                    ),
-                    RadialBarSeries<int, String>(
-                      dataSource: [values[1] ?? 0],
-                      xValueMapper: (_, __) => titles[1],
-                      yValueMapper: (int? data, _) => data ?? 0,
-                      pointColorMapper: (_, __) => colors[1],
-                      radius: '72%',
-                      innerRadius: '60%',
-                      maximumValue: 100,
-                      cornerStyle: CornerStyle.bothCurve,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 10),
-              // Custom Legend Section with GridView for 2x2 layout
-              SizedBox(
-                height: 100, // Set a fixed height for the GridView
-                child: GridView.builder(
-                  shrinkWrap:
-                      true, // Ensures it doesn't take up more space than needed
-                  physics:
-                      NeverScrollableScrollPhysics(), // Disable scrolling in this section
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2, // Two columns
-                    childAspectRatio:
-                        3, // Adjust this ratio to fit text beside the box
-                    mainAxisSpacing: 0, // Reduced space between rows
-                    crossAxisSpacing: 0, // Space between columns
-                  ),
-                  itemCount: titles.length,
-                  itemBuilder: (context, index) {
-                    return GestureDetector(
-                      onTap: () {
-                        // Pass the corresponding value to the new page
-                        if (titles[index] == "Level") {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => LevelPage(values[0] ?? 0),
-                            ),
-                          );
-                        } else if (titles[index] == "Last Session") {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) =>
-                                  LastSessionAssismentPage(values[1] ?? 0),
-                            ),
-                          );
-                        } else if (titles[index] == "Efficiency") {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => Efficiency(
-                                  value: values[2] ?? 0,
-                                  userLevel: values[0] ?? 0),
-                            ),
-                          );
-                        }
-                      },
-                      child: Row(
-                        mainAxisAlignment:
-                            MainAxisAlignment.start, // Align items to the left
-                        children: [
-                          Icon(
-                            Icons.square_rounded,
-                            color: colors[index],
-                            size: 30,
-                          ),
-                          const SizedBox(
-                              width: 8), // Space between icon and text
-                          Text(
-                            titles[index],
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 20),
-                            textAlign: TextAlign.center,
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(left: 8.0),
-                            child: Icon(
-                              Icons.arrow_forward_ios_rounded,
-                              color: Colors.white
-                                  .withOpacity(0.5), // Slight opacity
-                              size: 18,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }

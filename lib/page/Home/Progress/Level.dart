@@ -13,330 +13,908 @@ class LevelPage extends StatefulWidget {
 }
 
 class _LevelPageState extends State<LevelPage>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
+    with TickerProviderStateMixin {
+  late AnimationController _fadeController;
+  late AnimationController _slideController;
+  late AnimationController _scaleController;
   late Animation<double> _fadeAnimation;
-  late Future<int> _adjustedLevelFuture;
+  late Animation<Offset> _slideAnimation;
+  late Animation<double> _scaleAnimation;
+  late Future<LevelAnalysisData> _levelDataFuture;
+
+  // Key parameters for level calculation
+  final List<String> keyParameters = [
+    "Left Knee Power(Watts)",
+    "Left Knee Torque(Nm)",
+    "Cervical Torque(Nm)",
+    "Cervical Force(N)",
+    "Left Hip Torque(Nm)"
+  ];
+
+  // Standard ranges for parameters
+  final Map<String, List<double>> standardRanges = {
+    "Left Knee Power(Watts)": [-2477.62793, 2353.145996],
+    "Left Knee Torque(Nm)": [0.05497811, 719.8560181],
+    "Cervical Torque(Nm)": [0.047000591, 124.5862427],
+    "Cervical Force(N)": [17.46109772, 1094.576782],
+    "Left Hip Torque(Nm)": [0.876266956, 3227.84375],
+  };
 
   @override
   void initState() {
     super.initState();
+    _setupAnimations();
+    _levelDataFuture = loadLevelAnalysisData();
+  }
 
-    // Initializing Animation Controller for fade-in effect
-    _controller = AnimationController(
-      duration: const Duration(seconds: 1),
+  void _setupAnimations() {
+    _fadeController = AnimationController(
+      duration: const Duration(milliseconds: 1200),
       vsync: this,
     );
 
-    _fadeAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
+    _slideController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
 
-    // Load adjusted level from analysis
-    _adjustedLevelFuture = loadAdjustedLevel();
+    _scaleController = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
 
-    // Start animation when page loads
-    _controller.forward();
+    _fadeAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(
+      parent: _fadeController,
+      curve: Curves.easeOut,
+    ));
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, 0.3),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _slideController,
+      curve: Curves.easeOutCubic,
+    ));
+
+    _scaleAnimation = Tween<double>(
+      begin: 0.8,
+      end: 1.0,
+    ).animate(CurvedAnimation(
+      parent: _scaleController,
+      curve: Curves.elasticOut,
+    ));
+
+    // Stagger the animations
+    _fadeController.forward();
+    Future.delayed(const Duration(milliseconds: 200), () {
+      _slideController.forward();
+    });
+    Future.delayed(const Duration(milliseconds: 400), () {
+      _scaleController.forward();
+    });
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _fadeController.dispose();
+    _slideController.dispose();
+    _scaleController.dispose();
     super.dispose();
   }
 
-  Future<int> loadAdjustedLevel() async {
+  Future<LevelAnalysisData> loadLevelAnalysisData() async {
     try {
-      File? mostRecentFile = await getMostRecentAnalysisFile();
+      List<File> latestFiles = await getLatestAnalysisFiles(4);
 
-      if (mostRecentFile == null || !await mostRecentFile.exists()) {
-        print("No analysis file found, using default level");
-        return widget.value;
+      if (latestFiles.isEmpty) {
+        print("No analysis files found, using default level");
+        return LevelAnalysisData(
+          level: widget.value / 10.0,
+          sessionAccuracy: widget.value.toDouble(),
+          parameterScores: {},
+          improvementAreas: [],
+        );
       }
 
-      final String data = await mostRecentFile.readAsString();
-      final List<String> lines = data.split('\n');
+      double totalSessionAccuracy = 0.0;
+      int validSessions = 0;
+      Map<String, List<double>> allParameterValues = {};
 
-      // Look for level-related metrics in the analysis file
-      double totalScore = 0.0;
-      int metricCount = 0;
+      for (File file in latestFiles) {
+        try {
+          String content = await file.readAsString();
+          List<String> lines = content.split('\n');
 
-      for (int i = 1; i < lines.length; i++) {
-        final String line = lines[i].trim();
-        if (line.isEmpty) continue;
+          String? sessionAccuracyLine;
+          for (int i = lines.length - 1; i >= 0; i--) {
+            if (lines[i].trim().isNotEmpty && lines[i].contains('Session Accuracy')) {
+              sessionAccuracyLine = lines[i];
+              break;
+            }
+          }
 
-        final List<String> values = line.split(',');
-        if (values.length >= 2) {
-          final String metricName = values[0].trim().toLowerCase();
-          final double metricValue = double.tryParse(values[1].trim()) ?? 0.0;
+          if (sessionAccuracyLine != null) {
+            RegExp regex = RegExp(r'(\d+\.?\d*)%');
+            Match? match = regex.firstMatch(sessionAccuracyLine);
+            if (match != null) {
+              double accuracy = double.parse(match.group(1)!);
+              totalSessionAccuracy += accuracy;
+              validSessions++;
+            }
+          }
 
-          // Consider metrics that contribute to overall level
-          if (isLevelRelevantMetric(metricName)) {
-            totalScore += metricValue;
-            metricCount++;
+          if (lines.isNotEmpty) {
+            List<String> headers = lines[0].split(',').map((h) => h.trim().replaceAll('"', '')).toList();
+
+            for (int i = 1; i < lines.length - 1; i++) {
+              String line = lines[i].trim();
+              if (line.isEmpty || line.contains('Session Accuracy')) continue;
+
+              List<String> values = line.split(',');
+              if (values.length >= headers.length) {
+                for (String paramName in keyParameters) {
+                  int paramIndex = headers.indexOf(paramName);
+                  if (paramIndex != -1 && paramIndex < values.length) {
+                    try {
+                      double value = double.parse(values[paramIndex].trim());
+                      if (!allParameterValues.containsKey(paramName)) {
+                        allParameterValues[paramName] = [];
+                      }
+                      allParameterValues[paramName]!.add(value);
+                    } catch (e) {}
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          print("Error processing file ${file.path}: $e");
+        }
+      }
+
+      double averageSessionAccuracy = validSessions > 0 ? totalSessionAccuracy / validSessions : widget.value.toDouble();
+
+      Map<String, double> parameterScores = {};
+      List<String> improvementAreas = [];
+
+      for (String paramName in keyParameters) {
+        if (allParameterValues.containsKey(paramName) && allParameterValues[paramName]!.isNotEmpty) {
+          List<double> values = allParameterValues[paramName]!;
+          List<double> standardRange = standardRanges[paramName]!;
+
+          double score = calculateParameterScore(values, standardRange);
+          parameterScores[paramName] = score;
+
+          if (score < 60) {
+            improvementAreas.add(paramName);
           }
         }
       }
 
-      if (metricCount > 0) {
-        // Calculate average score and convert to level (0-100 scale)
-        double averageScore = totalScore / metricCount;
-        int adjustedLevel = (averageScore * 100 / 100).round().clamp(0, 100);
-        return adjustedLevel;
-      }
+      double overallLevel = calculateOverallLevel(averageSessionAccuracy, parameterScores);
 
-      return widget.value;
+      return LevelAnalysisData(
+        level: overallLevel,
+        sessionAccuracy: averageSessionAccuracy,
+        parameterScores: parameterScores,
+        improvementAreas: improvementAreas,
+      );
+
     } catch (e) {
-      print("Error loading adjusted level: $e");
-      return widget.value;
+      print("Error loading level analysis data: $e");
+      return LevelAnalysisData(
+        level: widget.value / 10.0,
+        sessionAccuracy: widget.value.toDouble(),
+        parameterScores: {},
+        improvementAreas: [],
+      );
     }
   }
 
-  bool isLevelRelevantMetric(String metricName) {
-    // Define which metrics contribute to overall level calculation
-    List<String> relevantMetrics = [
-      'speed', 'velocity', 'ball_speed',
-      'accuracy', 'precision', 'target_accuracy',
-      'consistency', 'stability',
-      'power', 'force',
-      'technique', 'form',
-      'overall_score', 'total_score'
-    ];
+  double calculateParameterScore(List<double> userValues, List<double> standardRange) {
+    if (userValues.isEmpty) return 0.0;
 
-    return relevantMetrics.any((metric) => metricName.contains(metric));
+    double standardMin = standardRange[0];
+    double standardMax = standardRange[1];
+    double standardMid = (standardMin + standardMax) / 2;
+    double standardRange_width = standardMax - standardMin;
+
+    double totalScore = 0.0;
+    for (double value in userValues) {
+      if (value >= standardMin && value <= standardMax) {
+        double distanceFromMid = (value - standardMid).abs();
+        double normalizedDistance = distanceFromMid / (standardRange_width / 2);
+        totalScore += (1.0 - normalizedDistance) * 100;
+      } else {
+        double distanceOutside = value < standardMin ?
+        (standardMin - value) : (value - standardMax);
+        double penalty = (distanceOutside / standardRange_width) * 50;
+        totalScore += (50 - penalty).clamp(0, 50);
+      }
+    }
+
+    return totalScore / userValues.length;
   }
 
-  Future<File?> getMostRecentAnalysisFile() async {
+  double calculateOverallLevel(double sessionAccuracy, Map<String, double> parameterScores) {
+    double sessionWeight = 0.7;
+    double parameterWeight = 0.3;
+
+    double averageParameterScore = 0.0;
+    if (parameterScores.isNotEmpty) {
+      double totalParameterScore = parameterScores.values.reduce((a, b) => a + b);
+      averageParameterScore = totalParameterScore / parameterScores.length;
+    }
+
+    double combinedScore = (sessionAccuracy * sessionWeight) + (averageParameterScore * parameterWeight);
+    return (combinedScore / 10).clamp(0, 10);
+  }
+
+  Future<List<File>> getLatestAnalysisFiles(int count) async {
     try {
       Directory appDir = await getApplicationSupportDirectory();
       Directory hiddenDir = Directory('${appDir.path}/.analysis_results');
 
       if (!await hiddenDir.exists()) {
-        return null;
+        return [];
       }
 
       List<FileSystemEntity> files = await hiddenDir.list().toList();
-
-      // Filter CSV files and sort by modification time
       List<File> csvFiles = files
           .whereType<File>()
           .where((file) => file.path.endsWith('.csv'))
           .toList();
 
       if (csvFiles.isEmpty) {
-        return null;
+        return [];
       }
 
-      // Sort by modification time (most recent first)
       csvFiles.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-
-      return csvFiles.first;
+      return csvFiles.take(count).toList();
     } catch (e) {
-      print("Error getting most recent analysis file: $e");
-      return null;
+      print("Error getting latest analysis files: $e");
+      return [];
+    }
+  }
+
+  String _getUserStatus(double level) {
+    if (level < 4) {
+      return 'Beginner';
+    } else if (level < 7) {
+      return 'Intermediate';
+    } else {
+      return 'Advanced';
+    }
+  }
+
+  Color _getLevelColor(double level) {
+    if (level < 4) {
+      return Colors.red.shade400;
+    } else if (level < 7) {
+      return Colors.orange.shade400;
+    } else {
+      return Colors.green.shade400;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          return FadeTransition(
-            opacity: _fadeAnimation,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 20),
-                  FutureBuilder<int>(
-                    future: _adjustedLevelFuture,
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(child: CircularProgressIndicator());
-                      } else if (snapshot.hasError) {
-                        return _buildLevelSection(widget.value);
-                      } else {
-                        int adjustedLevel = snapshot.data ?? widget.value;
-                        return _buildLevelSection(adjustedLevel);
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 30),
-                  _buildInfoSection(),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  // Function to get the user status based on level
-  String _getUserStatus(double level) {
-    if (level < 4) {
-      return 'Beginner'; // Level below 4
-    } else if (level < 7) {
-      return 'Intermediate'; // Level between 4 and 6
-    } else {
-      return 'Advanced'; // Level 7 and above
-    }
-  }
-
-  Widget _buildLevelSection(int value) {
-    double level = value / 10; // Convert value to a scale of 10
-
-    // Get the status message based on the level
-    String status = _getUserStatus(level);
-
-    return Container(
-      color: Colors.transparent,
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        mainAxisAlignment:
-        MainAxisAlignment.center, // Center column contents vertically
-        crossAxisAlignment:
-        CrossAxisAlignment.center, // Center column contents horizontally
-        children: [
-          Text(
-            'Level Progress - $status',
-            style: TextStyle(
-              color: Colors.green.shade400,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Center(
-            // Using Syncfusion's radial chart to replace CircularPercentIndicator
-            child: SfCircularChart(
-              annotations: <CircularChartAnnotation>[
-                CircularChartAnnotation(
-                  widget: Text(
-                    '${level.toStringAsFixed(0)}/10',
-                    style: const TextStyle(
+      backgroundColor: const Color(0xFF0A0A0A),
+      body: SafeArea(
+        child: FadeTransition(
+          opacity: _fadeAnimation,
+          child: Column(
+            children: [
+              // Modern header
+              Container(
+                padding: const EdgeInsets.all(24),
+                child: Row(
+                  children: [
+                    GestureDetector(
+                      onTap: () => Navigator.pop(context),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[800],
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.arrow_back_ios_new_rounded,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    const Text(
+                      "Level Progress",
+                      style: TextStyle(
                         color: Colors.white,
                         fontSize: 24,
-                        fontWeight: FontWeight.bold),
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: -0.5,
+                      ),
+                    ),
+                    const Spacer(),
+                    const SizedBox(width: 44),
+                  ],
+                ),
+              ),
+
+              // Content
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Column(
+                    children: [
+                      FutureBuilder<LevelAnalysisData>(
+                        future: _levelDataFuture,
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState == ConnectionState.waiting) {
+                            return _buildLoadingState();
+                          } else if (snapshot.hasError) {
+                            return _buildLevelSection(LevelAnalysisData(
+                              level: widget.value / 10.0,
+                              sessionAccuracy: widget.value.toDouble(),
+                              parameterScores: {},
+                              improvementAreas: [],
+                            ));
+                          } else {
+                            return _buildLevelSection(snapshot.data!);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 30),
+                      SlideTransition(
+                        position: _slideAnimation,
+                        child: _buildParameterScoresSection(),
+                      ),
+                      const SizedBox(height: 30),
+                      SlideTransition(
+                        position: _slideAnimation,
+                        child: _buildInfoSection(),
+                      ),
+                      const SizedBox(height: 40),
+                    ],
                   ),
                 ),
-              ],
-              series: <CircularSeries>[
-                RadialBarSeries<int, String>(
-                  maximumValue: 10, // Set the maximum value to 10
-                  radius: '80%',
-                  dataSource: [value],
-                  cornerStyle: CornerStyle.bothCurve,
-                  xValueMapper: (int data, _) => '',
-                  yValueMapper: (int data, _) =>
-                  level, // Progress in scale of 10
-                  pointColorMapper: (int data, _) => Colors.green.shade400,
-                  trackColor: Colors.grey.shade700, // Track background color
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-          const SizedBox(height: 20),
-          Text(
-            'You have reached level ${level.toStringAsFixed(1)} out of 10. Keep pushing to reach the next level!',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 16),
-          ),
-          const SizedBox(height: 10),
-          FutureBuilder<int>(
-            future: _adjustedLevelFuture,
-            builder: (context, snapshot) {
-              if (snapshot.hasData && snapshot.data != widget.value) {
-                return Text(
-                  'Level updated based on your latest analysis results!',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.blue.shade300,
-                    fontSize: 14,
-                    fontStyle: FontStyle.italic,
-                  ),
-                );
-              }
-              return const SizedBox.shrink();
-            },
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildInfoSection() {
-    return Card(
-      color: Colors.grey[850],
-      elevation: 5,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(15),
-      ),
-      margin: const EdgeInsets.symmetric(horizontal: 10),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
+  Widget _buildLoadingState() {
+    return Container(
+      height: 300,
+      child: Center(
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(
-              'Tips',
-              style: TextStyle(
-                color: Colors.green.shade400,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: CircularProgressIndicator(
+                color: Colors.blue,
+                strokeWidth: 3,
               ),
             ),
-            const SizedBox(height: 10),
-            FutureBuilder<int>(
-              future: _adjustedLevelFuture,
-              builder: (context, snapshot) {
-                if (snapshot.hasData) {
-                  double level = snapshot.data! / 10;
-                  String status = _getUserStatus(level);
-
-                  String tips = '';
-                  switch (status) {
-                    case 'Beginner':
-                      tips = 'Focus on building fundamental skills and consistency. Practice basic techniques regularly and don\'t rush your progress.';
-                      break;
-                    case 'Intermediate':
-                      tips = 'Work on refining your technique and increasing accuracy. Start incorporating more advanced strategies into your practice.';
-                      break;
-                    case 'Advanced':
-                      tips = 'Fine-tune your performance and work on consistency under pressure. Focus on mental game and strategic play.';
-                      break;
-                  }
-
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'As a $status level player, $tips',
-                        style: const TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                      const SizedBox(height: 10),
-                      const Text(
-                        'Your level is automatically updated based on your latest session analysis. Keep practicing to see continued improvement!',
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                    ],
-                  );
-                } else {
-                  return const Text(
-                    'This section contains additional details about your serve and progress milestones, and tips to improve your level.',
-                    style: TextStyle(color: Colors.white, fontSize: 16),
-                  );
-                }
-              },
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'Keep up the good work and stay motivated to reach your goals!',
-              style: TextStyle(color: Colors.white, fontSize: 16),
+            const SizedBox(height: 20),
+            Text(
+              "Analyzing your performance...",
+              style: TextStyle(
+                color: Colors.grey[400],
+                fontSize: 16,
+              ),
             ),
           ],
         ),
       ),
     );
   }
+
+  Widget _buildLevelSection(LevelAnalysisData levelData) {
+    double level = levelData.level;
+    String status = _getUserStatus(level);
+    Color levelColor = _getLevelColor(level);
+
+    return ScaleTransition(
+      scale: _scaleAnimation,
+      child: Container(
+        padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              levelColor.withOpacity(0.1),
+              levelColor.withOpacity(0.05),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(32),
+          border: Border.all(
+            color: levelColor.withOpacity(0.3),
+            width: 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: levelColor.withOpacity(0.1),
+              blurRadius: 30,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            // Status badge
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [levelColor, levelColor.withOpacity(0.8)],
+                ),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: levelColor.withOpacity(0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Text(
+                status.toUpperCase(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            Text(
+              'Level Progress',
+              style: TextStyle(
+                color: levelColor,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                letterSpacing: -0.5,
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            Text(
+              'Based on Recent Session Analysis',
+              style: TextStyle(
+                color: Colors.grey[400],
+                fontSize: 14,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Circular progress with modern styling
+            Container(
+              width: 200,
+              height: 200,
+              child: SfCircularChart(
+                annotations: <CircularChartAnnotation>[
+                  CircularChartAnnotation(
+                    widget: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${level.toStringAsFixed(1)}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 32,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Text(
+                          '/10',
+                          style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 16,
+                            fontWeight: FontWeight.normal,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${levelData.sessionAccuracy.toStringAsFixed(1)}%',
+                          style: TextStyle(
+                            color: Colors.blue.shade300,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                series: <CircularSeries>[
+                  RadialBarSeries<double, String>(
+                    maximumValue: 10,
+                    radius: '85%',
+                    innerRadius: '70%',
+                    dataSource: [level],
+                    cornerStyle: CornerStyle.bothCurve,
+                    xValueMapper: (double data, _) => '',
+                    yValueMapper: (double data, _) => data,
+                    pointColorMapper: (double data, _) => levelColor,
+                    trackColor: Colors.grey.shade800,
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            Text(
+              'You have reached level ${level.toStringAsFixed(1)} out of 10 based on your recent performance analysis.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                height: 1.5,
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            Text(
+              'Your level combines session accuracy (70%) and biomechanical parameter analysis (30%).',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.blue.shade300,
+                fontSize: 14,
+                fontStyle: FontStyle.italic,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildParameterScoresSection() {
+    return FutureBuilder<LevelAnalysisData>(
+      future: _levelDataFuture,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data!.parameterScores.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        final parameterScores = snapshot.data!.parameterScores;
+        List<ParameterScoreData> chartData = [];
+
+        parameterScores.forEach((param, score) {
+          chartData.add(ParameterScoreData(
+            _getShortParameterName(param),
+            score,
+          ));
+        });
+
+        return Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Colors.purple.withOpacity(0.1),
+                Colors.blue.withOpacity(0.1),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: Colors.purple.withOpacity(0.2),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.purple.withOpacity(0.1),
+                blurRadius: 20,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.purple, Colors.blue],
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.analytics_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Text(
+                    'Parameter Performance',
+                    style: TextStyle(
+                      color: Colors.purple.shade300,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Container(
+                height: 280,
+                child: SfCartesianChart(
+                  primaryXAxis: CategoryAxis(
+                    labelRotation: -45,
+                    labelIntersectAction: AxisLabelIntersectAction.multipleRows,
+                    majorGridLines: MajorGridLines(width: 0),
+                    axisLine: AxisLine(width: 0),
+                  ),
+                  primaryYAxis: NumericAxis(
+                    minimum: 0,
+                    maximum: 100,
+                    interval: 20,
+                    majorGridLines: MajorGridLines(
+                      width: 0.5,
+                      color: Colors.grey.withOpacity(0.2),
+                    ),
+                    axisLine: AxisLine(width: 0),
+                  ),
+                  plotAreaBorderWidth: 0,
+                  tooltipBehavior: TooltipBehavior(enable: true),
+                  series: <CartesianSeries>[
+                    ColumnSeries<ParameterScoreData, String>(
+                      dataSource: chartData,
+                      xValueMapper: (ParameterScoreData data, _) => data.parameter,
+                      yValueMapper: (ParameterScoreData data, _) => data.score,
+                      dataLabelSettings: const DataLabelSettings(
+                        isVisible: true,
+                        textStyle: TextStyle(color: Colors.white, fontSize: 10),
+                      ),
+                      pointColorMapper: (ParameterScoreData data, _) =>
+                      data.score >= 70 ? Colors.green :
+                      data.score >= 50 ? Colors.orange : Colors.red,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _getShortParameterName(String fullName) {
+    Map<String, String> shortNames = {
+      "Left Knee Power(Watts)": "L Knee Power",
+      "Left Knee Torque(Nm)": "L Knee Torque",
+      "Cervical Torque(Nm)": "Cervical Torque",
+      "Cervical Force(N)": "Cervical Force",
+      "Left Hip Torque(Nm)": "L Hip Torque",
+    };
+    return shortNames[fullName] ?? fullName;
+  }
+
+  Widget _buildInfoSection() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.teal.withOpacity(0.1),
+            Colors.green.withOpacity(0.1),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: Colors.teal.withOpacity(0.2),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.teal.withOpacity(0.1),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.teal, Colors.green],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.lightbulb_rounded,
+                  color: Colors.white,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Text(
+                'Level Analysis & Tips',
+                style: TextStyle(
+                  color: Colors.teal.shade300,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: -0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          FutureBuilder<LevelAnalysisData>(
+            future: _levelDataFuture,
+            builder: (context, snapshot) {
+              if (snapshot.hasData) {
+                LevelAnalysisData levelData = snapshot.data!;
+                String status = _getUserStatus(levelData.level);
+
+                String tips = '';
+                switch (status) {
+                  case 'Beginner':
+                    tips = 'Focus on building fundamental biomechanical patterns and consistency. Work on proper form and technique development.';
+                    break;
+                  case 'Intermediate':
+                    tips = 'Refine your technique and work on parameter optimization. Focus on reducing variation in your key performance metrics.';
+                    break;
+                  case 'Advanced':
+                    tips = 'Fine-tune your biomechanical efficiency and work on consistency under varying conditions. Focus on peak performance optimization.';
+                    break;
+                }
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'As a $status level player, $tips',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        height: 1.6,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    if (levelData.improvementAreas.isNotEmpty) ...[
+                      Text(
+                        'Focus on improving these parameters:',
+                        style: TextStyle(
+                          color: Colors.orange.shade300,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      ...levelData.improvementAreas.map((area) => Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.orange.withOpacity(0.3),
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.trending_up_rounded,
+                              color: Colors.orange.shade300,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _getShortParameterName(area),
+                              style: const TextStyle(color: Colors.white, fontSize: 14),
+                            ),
+                          ],
+                        ),
+                      )),
+                      const SizedBox(height: 20),
+                    ],
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: Colors.blue.withOpacity(0.2),
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.info_rounded,
+                            color: Colors.blue.shade300,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Your level combines session accuracy (70%) and biomechanical parameter performance (30%). Keep practicing to see continued improvement!',
+                              style: TextStyle(
+                                color: Colors.blue.shade300,
+                                fontSize: 14,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              } else {
+                return const Text(
+                  'Your level is calculated based on comprehensive analysis of your performance metrics and biomechanical parameters.',
+                  style: TextStyle(color: Colors.white, fontSize: 16, height: 1.6),
+                );
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Data model for level analysis
+class LevelAnalysisData {
+  final double level;
+  final double sessionAccuracy;
+  final Map<String, double> parameterScores;
+  final List<String> improvementAreas;
+
+  LevelAnalysisData({
+    required this.level,
+    required this.sessionAccuracy,
+    required this.parameterScores,
+    required this.improvementAreas,
+  });
+}
+
+/// Data model for parameter scores chart
+class ParameterScoreData {
+  final String parameter;
+  final double score;
+
+  ParameterScoreData(this.parameter, this.score);
 }

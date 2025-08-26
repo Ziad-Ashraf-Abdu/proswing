@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:file_picker/file_picker.dart';
@@ -5,6 +8,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:http_parser/http_parser.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'dart:async';
@@ -27,8 +31,12 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
   // Animation controllers
   late AnimationController _uploadAnimationController;
   late AnimationController _pulseAnimationController;
+  late AnimationController _fadeController;
+  late AnimationController _slideController;
   late Animation<double> _uploadAnimation;
   late Animation<double> _pulseAnimation;
+  late Animation<double> _fadeAnimation;
+  late Animation<Offset> _slideAnimation;
 
   // Upload state variables
   bool _isUploading = false;
@@ -36,6 +44,7 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
   double _uploadProgress = 0.0;
   String _uploadStatus = '';
   PlatformFile? _selectedFile;
+  String? _localResultPath;
 
   // Firebase instances
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -80,6 +89,16 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
       vsync: this,
     );
 
+    _fadeController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
+
+    _slideController = AnimationController(
+      duration: const Duration(milliseconds: 1200),
+      vsync: this,
+    );
+
     _uploadAnimation = CurvedAnimation(
       parent: _uploadAnimationController,
       curve: Curves.easeInOutCubic,
@@ -87,13 +106,31 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
 
     _pulseAnimation = Tween<double>(
       begin: 1.0,
-      end: 1.1,
+      end: 1.05,
     ).animate(CurvedAnimation(
       parent: _pulseAnimationController,
       curve: Curves.easeInOut,
     ));
 
+    _fadeAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(
+      parent: _fadeController,
+      curve: Curves.easeOut,
+    ));
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, 0.3),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _slideController,
+      curve: Curves.easeOutCubic,
+    ));
+
     _pulseAnimationController.repeat(reverse: true);
+    _fadeController.forward();
+    _slideController.forward();
   }
 
   Future<void> _initializeNotifications() async {
@@ -148,6 +185,8 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
   void dispose() {
     _uploadAnimationController.dispose();
     _pulseAnimationController.dispose();
+    _fadeController.dispose();
+    _slideController.dispose();
     super.dispose();
   }
 
@@ -155,80 +194,129 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
   Future<void> _showUploadOptions() async {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.grey[900],
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
       builder: (BuildContext context) {
         return Container(
-          padding: EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0A0A0A),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
+            border: Border.all(
+              color: Colors.blue.withOpacity(0.3),
+              width: 1,
+            ),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Handle bar
               Container(
                 width: 40,
-                height: 4,
-                margin: EdgeInsets.only(bottom: 20),
+                height: 5,
+                margin: const EdgeInsets.only(top: 12, bottom: 24),
                 decoration: BoxDecoration(
                   color: Colors.grey[600],
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              Text(
-                'Choose Upload Source',
-                style: TextStyle(
-                  color: Colors.green,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+
+              // Title with icon
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [Colors.blue, Colors.purple],
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.cloud_upload_rounded,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    const Text(
+                      'Choose Upload Source',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: -0.5,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              SizedBox(height: 20),
-              _buildUploadOption(
-                icon: Icons.phone_android,
-                title: 'Local Storage',
-                subtitle: 'Pick from device storage',
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickLocalFile();
-                },
-              ),
-              if (_isGoogleDriveConnected || !kIsWeb) ...[
-                SizedBox(height: 12),
-                _buildUploadOption(
-                  icon: Icons.cloud,
-                  title: 'Google Drive',
-                  subtitle: _isGoogleDriveConnected
-                      ? 'Access your Google Drive files'
-                      : 'Sign in to access Google Drive',
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickFromGoogleDrive();
-                  },
+
+              const SizedBox(height: 32),
+
+              // Upload options
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  children: [
+                    _buildModernUploadOption(
+                      icon: Icons.phone_android_rounded,
+                      title: 'Local Storage',
+                      subtitle: 'Pick from device storage',
+                      gradient: [Colors.green, Colors.teal],
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickLocalFile();
+                      },
+                    ),
+
+                    if (_isGoogleDriveConnected || !kIsWeb) ...[
+                      const SizedBox(height: 16),
+                      _buildModernUploadOption(
+                        icon: Icons.cloud_rounded,
+                        title: 'Google Drive',
+                        subtitle: _isGoogleDriveConnected
+                            ? 'Access your Google Drive files'
+                            : 'Sign in to access Google Drive',
+                        gradient: [Colors.blue, Colors.indigo],
+                        onTap: () {
+                          Navigator.pop(context);
+                          _pickFromGoogleDrive();
+                        },
+                      ),
+                    ],
+
+                    if (Platform.isIOS) ...[
+                      const SizedBox(height: 16),
+                      _buildModernUploadOption(
+                        icon: Icons.cloud_outlined,
+                        title: 'iCloud Drive',
+                        subtitle: 'Access your iCloud files',
+                        gradient: [Colors.cyan, Colors.blue],
+                        onTap: () {
+                          Navigator.pop(context);
+                          _pickFromICloud();
+                        },
+                      ),
+                    ],
+
+                    const SizedBox(height: 16),
+                    _buildModernUploadOption(
+                      icon: Icons.folder_open_rounded,
+                      title: 'Other Cloud Services',
+                      subtitle: 'Dropbox, OneDrive, etc.',
+                      gradient: [Colors.orange, Colors.deepOrange],
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickFromOtherClouds();
+                      },
+                    ),
+                  ],
                 ),
-              ],
-              if (Platform.isIOS) ...[
-                SizedBox(height: 12),
-                _buildUploadOption(
-                  icon: Icons.cloud_outlined,
-                  title: 'iCloud Drive',
-                  subtitle: 'Access your iCloud files',
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickFromICloud();
-                  },
-                ),
-              ],
-              SizedBox(height: 12),
-              _buildUploadOption(
-                icon: Icons.folder_open,
-                title: 'Other Cloud Services',
-                subtitle: 'Dropbox, OneDrive, etc.',
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickFromOtherClouds();
-                },
               ),
-              SizedBox(height: 20),
+
+              const SizedBox(height: 32),
             ],
           ),
         );
@@ -236,46 +324,69 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
     );
   }
 
-  Widget _buildUploadOption({
+  Widget _buildModernUploadOption({
     required IconData icon,
     required String title,
     required String subtitle,
+    required List<Color> gradient,
     required VoidCallback onTap,
   }) {
-    return InkWell(
+    return GestureDetector(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
       child: Container(
-        padding: EdgeInsets.all(16),
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: Colors.grey[800],
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.green.withOpacity(0.3)),
+          gradient: LinearGradient(
+            colors: gradient.map((c) => c.withOpacity(0.1)).toList(),
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: gradient.first.withOpacity(0.3),
+            width: 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: gradient.first.withOpacity(0.1),
+              blurRadius: 15,
+              offset: const Offset(0, 5),
+            ),
+          ],
         ),
         child: Row(
           children: [
             Container(
-              padding: EdgeInsets.all(12),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.green.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(8),
+                gradient: LinearGradient(colors: gradient),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: gradient.first.withOpacity(0.3),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
               ),
-              child: Icon(icon, color: Colors.green, size: 24),
+              child: Icon(icon, color: Colors.white, size: 24),
             ),
-            SizedBox(width: 16),
+            const SizedBox(width: 16),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     title,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 16,
+                      fontSize: 18,
                       fontWeight: FontWeight.bold,
+                      letterSpacing: -0.3,
                     ),
                   ),
-                  SizedBox(height: 2),
+                  const SizedBox(height: 4),
                   Text(
                     subtitle,
                     style: TextStyle(
@@ -286,7 +397,11 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios, color: Colors.green, size: 16),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              color: Colors.grey[500],
+              size: 16,
+            ),
           ],
         ),
       ),
@@ -364,44 +479,133 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
     return await showDialog<drive.File>(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
-            side: BorderSide(color: Colors.green, width: 2),
-          ),
-          title: Text(
-            'Select Google Drive File',
-            style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
-          ),
-          content: Container(
-            width: double.maxFinite,
-            height: 300,
-            child: ListView.builder(
-              itemCount: files.length,
-              itemBuilder: (context, index) {
-                final file = files[index];
-                return ListTile(
-                  leading: Icon(Icons.insert_drive_file, color: Colors.green),
-                  title: Text(
-                    file.name ?? 'Unknown file',
-                    style: TextStyle(color: Colors.white),
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0A0A),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.blue.withOpacity(0.3),
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.blue.withOpacity(0.1), Colors.purple.withOpacity(0.1)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
                   ),
-                  subtitle: Text(
-                    'Size: ${_formatFileSize(file.size)}',
-                    style: TextStyle(color: Colors.grey[400]),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(
+                          Icons.cloud_rounded,
+                          color: Colors.blue,
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Text(
+                        'Select Google Drive File',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
-                  onTap: () => Navigator.of(context).pop(file),
-                );
-              },
+                ),
+
+                // File list
+                Container(
+                  constraints: const BoxConstraints(maxHeight: 300),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: files.length,
+                    itemBuilder: (context, index) {
+                      final file = files[index];
+                      return Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                        child: ListTile(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          tileColor: Colors.grey[800]?.withOpacity(0.5),
+                          leading: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.green.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Icon(
+                              Icons.insert_drive_file_rounded,
+                              color: Colors.green,
+                              size: 20,
+                            ),
+                          ),
+                          title: Text(
+                            file.name ?? 'Unknown file',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'Size: ${_formatFileSize(file.size)}',
+                            style: TextStyle(color: Colors.grey[400]),
+                          ),
+                          onTap: () => Navigator.of(context).pop(file),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+
+                // Actions
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text(
+                          'Cancel',
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: Text('Cancel', style: TextStyle(color: Colors.red)),
-            ),
-          ],
         );
       },
     );
@@ -526,244 +730,252 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
-            side: BorderSide(color: Colors.green, width: 2),
-          ),
-          title: Text(
-            'Upload File',
-            style: TextStyle(
-              color: Colors.green,
-              fontWeight: FontWeight.bold,
-              fontSize: 20,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'File: ${_selectedFile!.name}',
-                style: TextStyle(color: Colors.white, fontSize: 16),
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0A0A),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.blue.withOpacity(0.3),
+                width: 1,
               ),
-              SizedBox(height: 8),
-              Text(
-                'Size: ${(_selectedFile!.size / 1024).toStringAsFixed(2)} KB',
-                style: TextStyle(color: Colors.grey[400], fontSize: 14),
-              ),
-              SizedBox(height: 16),
-              Text(
-                'This file will be uploaded for analysis. The process may take a few minutes.',
-                style: TextStyle(color: Colors.white70, fontSize: 14),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                setState(() {
-                  _selectedFile = null;
-                  _uploadStatus = '';
-                });
-              },
-              child: Text(
-                'Cancel',
-                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-              ),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _uploadFile();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
                 ),
-              ),
-              child: Text(
-                'Upload',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
+              ],
             ),
-          ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Icon
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.blue, Colors.purple],
+                    ),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.upload_file_rounded,
+                    color: Colors.white,
+                    size: 32,
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                // Title
+                const Text(
+                  'Upload File',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // File info
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[800]?.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'File: ${_selectedFile!.name}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Size: ${(_selectedFile!.size / 1024).toStringAsFixed(2)} KB',
+                        style: TextStyle(
+                          color: Colors.grey[400],
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                Text(
+                  'This file will be uploaded for analysis. The process may take a few minutes.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.grey[400],
+                    fontSize: 14,
+                    height: 1.4,
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                // Actions
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          setState(() {
+                            _selectedFile = null;
+                            _uploadStatus = '';
+                          });
+                        },
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          'Cancel',
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          uploadFile();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Upload',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
   }
 
-  // Upload file to Firebase
-  Future<void> _uploadFile() async {
-    if (_selectedFile == null) return;
+  /// Call this to let user pick the CSV first:
+  Future<void> _pickFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+    );
+    if (result == null) return;
+    setState(() => _selectedFile = result.files.single);
+  }
 
-    User? currentUser = _auth.currentUser;
-    if (currentUser == null) {
-      _showErrorDialog('Please log in to upload files.');
-      return;
+  Future<String> _saveResultToFile(String resultData) async {
+    final appSupportDir = await getApplicationSupportDirectory();
+    final hiddenDir = Directory('${appSupportDir.path}/.analysis_results');
+    if (!await hiddenDir.exists()) {
+      await hiddenDir.create(recursive: true);
     }
+
+    final fileName = 'analysis_${DateTime.now().millisecondsSinceEpoch}.txt';
+    final file = File('${hiddenDir.path}/$fileName');
+    await file.writeAsString(resultData);
+    return file.path;
+  }
+
+  Future<void> uploadFile() async {
+    if (_selectedFile == null) return;
 
     setState(() {
       _isUploading = true;
       _uploadProgress = 0.0;
-      _uploadStatus = 'Preparing upload...';
+      _uploadStatus = 'Uploading file to backend...';
     });
-
     _uploadAnimationController.forward();
 
     try {
-      // Create unique filename
-      String fileName = '${currentUser.uid}_${DateTime.now().millisecondsSinceEpoch}_${_selectedFile!.name}';
+      Uint8List rawBytes;
+      if (_selectedFile!.bytes != null) {
+        rawBytes = _selectedFile!.bytes!;
+      } else if (_selectedFile!.path != null) {
+        rawBytes = await File(_selectedFile!.path!).readAsBytes();
+      } else {
+        throw Exception('No file data available');
+      }
 
-      // Upload to Firebase Storage
-      Reference storageRef = _storage.ref().child('csv_uploads').child(fileName);
-      UploadTask uploadTask = storageRef.putData(_selectedFile!.bytes!);
+      final fileName = _selectedFile!.name;
+      final uri = Uri.parse("http://192.168.1.2:7860/convert"); // Local FastAPI server
 
-      // Monitor upload progress
-      uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
-        double progress = snapshot.bytesTransferred / snapshot.totalBytes;
-        setState(() {
-          _uploadProgress = progress;
-          _uploadStatus = 'Uploading... ${(progress * 100).toStringAsFixed(1)}%';
-        });
-      });
+      final request = http.MultipartRequest('POST', uri)
+        ..files.add(http.MultipartFile.fromBytes(
+          'uploaded_file',
+          rawBytes,
+          filename: fileName,
+        ));
 
-      // Wait for upload completion
-      TaskSnapshot snapshot = await uploadTask;
-      String downloadUrl = await snapshot.ref.getDownloadURL();
+      final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
 
-      // Save metadata to Firestore
-      await _saveUploadMetadata(fileName, downloadUrl, currentUser.uid);
+      if (response.statusCode != 200) {
+        throw Exception('Upload failed: ${response.statusCode} $responseBody');
+      }
+
+      final jsonResponse = jsonDecode(responseBody);
+      final txtContent = jsonResponse['content'];
+
+      if (txtContent == null || txtContent is! String) {
+        throw Exception('Invalid response from server. Missing "content".');
+      }
+
+      // Save TXT content to user's phone
+      final localPath = await _saveResultToFile(txtContent);
 
       setState(() {
         _isUploading = false;
-        _isAnalyzing = true;
-        _uploadStatus = 'Upload complete! Starting analysis...';
+        _uploadStatus = '✅ File converted and saved to: $localPath';
+        _localResultPath = localPath;
       });
 
-      // Start analysis process
-      await _startAnalysis(fileName, currentUser.uid);
+      print('✅ Downloaded and saved to: $localPath');
 
-    } catch (e) {
-      setState(() {
-        _isUploading = false;
-        _uploadStatus = 'Upload failed';
-      });
       _uploadAnimationController.reverse();
-      _showErrorDialog('Upload failed: $e');
-    }
-  }
-
-  Future<void> _saveUploadMetadata(String fileName, String downloadUrl, String userId) async {
-    await _firestore.collection('csv_uploads').add({
-      'fileName': fileName,
-      'originalName': _selectedFile!.name,
-      'downloadUrl': downloadUrl,
-      'userId': userId,
-      'uploadTime': FieldValue.serverTimestamp(),
-      'status': 'uploaded',
-      'fileSize': _selectedFile!.size,
-    });
-  }
-
-  Future<void> _startAnalysis(String fileName, String userId) async {
-    try {
-      // Simulate analysis process (replace with actual analysis trigger)
-      await Future.delayed(Duration(seconds: 3));
-
-      // Update status in Firestore
-      QuerySnapshot uploadDocs = await _firestore
-          .collection('csv_uploads')
-          .where('fileName', isEqualTo: fileName)
-          .where('userId', isEqualTo: userId)
-          .get();
-
-      if (uploadDocs.docs.isNotEmpty) {
-        await uploadDocs.docs.first.reference.update({
-          'status': 'analyzing',
-          'analysisStartTime': FieldValue.serverTimestamp(),
-        });
-      }
-
-      // Listen for analysis completion
-      _listenForAnalysisCompletion(fileName, userId);
-
-      setState(() {
-        _uploadStatus = 'Your session is being analyzed. You will be notified when complete.';
-      });
-
       _showSuccessDialog();
-
     } catch (e) {
+      _uploadAnimationController.reverse();
       setState(() {
-        _isAnalyzing = false;
-        _uploadStatus = 'Analysis failed to start';
+        _isUploading = false;
+        _uploadStatus = '❌ Error: $e';
       });
-      _showErrorDialog('Failed to start analysis: $e');
-    }
-  }
-
-  void _listenForAnalysisCompletion(String fileName, String userId) {
-    _firestore
-        .collection('csv_uploads')
-        .where('fileName', isEqualTo: fileName)
-        .where('userId', isEqualTo: userId)
-        .snapshots()
-        .listen((QuerySnapshot snapshot) {
-      if (snapshot.docs.isNotEmpty) {
-        DocumentSnapshot doc = snapshot.docs.first;
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-
-        if (data['status'] == 'completed') {
-          _handleAnalysisCompletion(data);
-        }
-      }
-    });
-  }
-
-  Future<void> _handleAnalysisCompletion(Map<String, dynamic> analysisData) async {
-    // Show notification
-    await _showNotification(
-      'Analysis Complete',
-      'Your CSV analysis has been completed and saved locally.',
-    );
-
-    // Download and save result locally
-    if (analysisData['resultUrl'] != null) {
-      await _downloadAndSaveResult(analysisData['resultUrl']);
-    }
-
-    setState(() {
-      _isAnalyzing = false;
-      _uploadStatus = 'Analysis complete! Results saved to device.';
-    });
-  }
-
-  Future<void> _downloadAndSaveResult(String resultUrl) async {
-    try {
-      // Get hidden app directory
-      Directory appDir = await getApplicationSupportDirectory();
-      Directory hiddenDir = Directory('${appDir.path}/.analysis_results');
-
-      if (!await hiddenDir.exists()) {
-        await hiddenDir.create(recursive: true);
-      }
-
-      // Download file (this is a placeholder - implement actual download)
-      String fileName = 'analysis_${DateTime.now().millisecondsSinceEpoch}.csv';
-      File resultFile = File('${hiddenDir.path}/$fileName');
-
-      // Placeholder: In real implementation, download from resultUrl
-      await resultFile.writeAsString('Analysis results would be saved here');
-
-      print('Analysis result saved to: ${resultFile.path}');
-
-    } catch (e) {
-      print('Error saving analysis result: $e');
+      _showErrorDialog('Upload failed: $e');
     }
   }
 
@@ -798,49 +1010,113 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
-            side: BorderSide(color: Colors.green, width: 2),
-          ),
-          title: Row(
-            children: [
-              Icon(Icons.check_circle, color: Colors.green, size: 28),
-              SizedBox(width: 12),
-              Text(
-                'Success!',
-                style: TextStyle(
-                  color: Colors.green,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 20,
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0A0A),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.green.withOpacity(0.3),
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
                 ),
-              ),
-            ],
-          ),
-          content: Text(
-            'Your CSV file has been uploaded successfully. The analysis is now in progress. You will receive a notification when it\'s complete.',
-            style: TextStyle(color: Colors.white, fontSize: 16),
-          ),
-          actions: [
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _resetUploadState();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              child: Text(
-                'OK',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
+              ],
             ),
-          ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Success icon with animation
+                TweenAnimationBuilder(
+                  duration: const Duration(milliseconds: 600),
+                  tween: Tween<double>(begin: 0, end: 1),
+                  builder: (context, double value, child) {
+                    return Transform.scale(
+                      scale: value,
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Colors.green, Colors.teal],
+                          ),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.green.withOpacity(0.3),
+                              blurRadius: 15,
+                              spreadRadius: 0,
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.check_circle_rounded,
+                          color: Colors.white,
+                          size: 32,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+
+                const SizedBox(height: 20),
+
+                const Text(
+                  'Success!',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                Text(
+                  'Your CSV file has been uploaded successfully. The analysis is now in progress. You will receive a notification when it\'s complete.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.grey[400],
+                    fontSize: 16,
+                    height: 1.5,
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      _resetUploadState();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text(
+                      'Continue',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
@@ -850,46 +1126,96 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
-            side: BorderSide(color: Colors.red, width: 2),
-          ),
-          title: Row(
-            children: [
-              Icon(Icons.error, color: Colors.red, size: 28),
-              SizedBox(width: 12),
-              Text(
-                'Error',
-                style: TextStyle(
-                  color: Colors.red,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 20,
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0A0A),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.red.withOpacity(0.3),
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
                 ),
-              ),
-            ],
-          ),
-          content: Text(
-            message,
-            style: TextStyle(color: Colors.white, fontSize: 16),
-          ),
-          actions: [
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              child: Text(
-                'OK',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
+              ],
             ),
-          ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Error icon
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.red.withOpacity(0.3),
+                      width: 1,
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.error_outline_rounded,
+                    color: Colors.red,
+                    size: 32,
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                const Text(
+                  'Error',
+                  style: TextStyle(
+                    color: Colors.red,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.grey[300],
+                    fontSize: 16,
+                    height: 1.5,
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text(
+                      'Try Again',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
@@ -907,159 +1233,299 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
   }
 
   Widget _buildUploadArea() {
-    return AnimatedBuilder(
-      animation: _pulseAnimation,
-      builder: (context, child) {
-        return Transform.scale(
-          scale: _isUploading || _isAnalyzing ? 1.0 : _pulseAnimation.value,
-          child: Container(
-            height: 250,
-            width: double.infinity,
-            margin: EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.grey[900],
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: _isUploading || _isAnalyzing
-                    ? Colors.green
-                    : Colors.green.withOpacity(0.5),
-                width: 2,
-                style: BorderStyle.solid,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.green.withOpacity(0.2),
-                  blurRadius: 15,
-                  spreadRadius: 2,
-                ),
-              ],
-            ),
-            child: InkWell(
-              onTap: _isUploading || _isAnalyzing ? null : _showUploadOptions,
-              borderRadius: BorderRadius.circular(20),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (_isUploading || _isAnalyzing) ...[
-                    _buildProgressIndicator(),
-                  ] else ...[
-                    Icon(
-                      Icons.cloud_upload_outlined,
-                      size: 64,
-                      color: Colors.green,
-                    ),
-                    SizedBox(height: 16),
-                    Text(
-                      'Upload Files',
-                      style: TextStyle(
-                        color: Colors.green,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      'Drag or drop files here',
-                      style: TextStyle(
-                        color: Colors.grey[400],
-                        fontSize: 16,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      '— OR —',
-                      style: TextStyle(
-                        color: Colors.grey[500],
-                        fontSize: 14,
-                      ),
+    return FadeTransition(
+      opacity: _fadeAnimation,
+      child: SlideTransition(
+        position: _slideAnimation,
+        child: AnimatedBuilder(
+          animation: _pulseAnimation,
+          builder: (context, child) {
+            return Transform.scale(
+              scale: _isUploading || _isAnalyzing ? 1.0 : _pulseAnimation.value,
+              child: Container(
+                margin: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.blue.withOpacity(0.05),
+                      Colors.purple.withOpacity(0.05),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: _isUploading || _isAnalyzing
+                        ? Colors.blue
+                        : Colors.blue.withOpacity(0.3),
+                    width: 2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.blue.withOpacity(0.1),
+                      blurRadius: 20,
+                      spreadRadius: 0,
+                      offset: const Offset(0, 8),
                     ),
                   ],
-                ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: _isUploading || _isAnalyzing ? null : _showUploadOptions,
+                    borderRadius: BorderRadius.circular(24),
+                    child: Container(
+                      height: 280,
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (_isUploading || _isAnalyzing) ...[
+                            _buildModernProgressIndicator(),
+                          ] else ...[
+                            // Upload icon with gradient
+                            TweenAnimationBuilder(
+                              duration: const Duration(milliseconds: 1000),
+                              tween: Tween<double>(begin: 0, end: 1),
+                              builder: (context, double value, child) {
+                                return Transform.scale(
+                                  scale: value,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(24),
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: [Colors.blue, Colors.purple],
+                                      ),
+                                      shape: BoxShape.circle,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.blue.withOpacity(0.3),
+                                          blurRadius: 20,
+                                          spreadRadius: 0,
+                                        ),
+                                      ],
+                                    ),
+                                    child: const Icon(
+                                      Icons.cloud_upload_rounded,
+                                      size: 48,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+
+                            const SizedBox(height: 24),
+
+                            const Text(
+                              'Upload Files',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: -0.5,
+                              ),
+                            ),
+
+                            const SizedBox(height: 12),
+
+                            Text(
+                              'Drop your files here or click to browse',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.grey[400],
+                                fontSize: 16,
+                                height: 0.01,
+                              ),
+                            ),
+
+                            const SizedBox(height: 8),
+
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.grey[800]?.withOpacity(0.5),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                'CSV • XLSX',
+                                style: TextStyle(
+                                  color: Colors.grey[400],
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
-        );
-      },
+            );
+          },
+        ),
+      ),
     );
   }
 
-  Widget _buildProgressIndicator() {
+  Widget _buildModernProgressIndicator() {
     return Column(
       children: [
-        if (_isUploading) ...[
-          CircularProgressIndicator(
-            value: _uploadProgress,
-            strokeWidth: 6,
-            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
-            backgroundColor: Colors.grey[700],
+        // Animated progress ring
+        SizedBox(
+          width: 80,
+          height: 80,
+          child: Stack(
+            children: [
+              Center(
+                child: SizedBox(
+                  width: 80,
+                  height: 80,
+                  child: CircularProgressIndicator(
+                    value: _isUploading ? _uploadProgress / 100 : null,
+                    strokeWidth: 6,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                    backgroundColor: Colors.grey[700],
+                  ),
+                ),
+              ),
+              Center(
+                child: Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.blue, Colors.purple],
+                    ),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    _isUploading ? Icons.upload_rounded : Icons.analytics_rounded,
+                    color: Colors.white,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ],
           ),
-          SizedBox(height: 16),
-        ] else if (_isAnalyzing) ...[
-          CircularProgressIndicator(
-            strokeWidth: 6,
-            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
-            backgroundColor: Colors.grey[700],
-          ),
-          SizedBox(height: 16),
-        ],
+        ),
+
+        const SizedBox(height: 24),
+
         Text(
           _uploadStatus,
           textAlign: TextAlign.center,
-          style: TextStyle(
-            color: Colors.green,
+          style: const TextStyle(
+            color: Colors.white,
             fontSize: 16,
-            fontWeight: FontWeight.w500,
+            fontWeight: FontWeight.w600,
           ),
         ),
+
+        if (_isUploading && _uploadProgress > 0) ...[
+          const SizedBox(height: 8),
+          Text(
+            '${_uploadProgress.toInt()}%',
+            style: TextStyle(
+              color: Colors.grey[400],
+              fontSize: 14,
+            ),
+          ),
+        ],
       ],
     );
   }
 
   Widget _buildFileTypeInfo() {
-    return Container(
-      margin: EdgeInsets.symmetric(horizontal: 20),
-      padding: EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey[850],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.green.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return FadeTransition(
+      opacity: _fadeAnimation,
+      child: SlideTransition(
+        position: _slideAnimation,
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Colors.green.withOpacity(0.05),
+                Colors.teal.withOpacity(0.05),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: Colors.green.withOpacity(0.2),
+              width: 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.info_outline, color: Colors.green, size: 20),
-              SizedBox(width: 8),
-              Text(
-                'Supported File Types',
-                style: TextStyle(
-                  color: Colors.green,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.green, Colors.teal],
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.info_outline_rounded,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'Supported File Types',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 16),
+
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                children: _supportedExtensions.map((ext) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.green.withOpacity(0.2), Colors.teal.withOpacity(0.2)],
+                      ),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.green.withOpacity(0.3),
+                        width: 1,
+                      ),
+                    ),
+                    child: Text(
+                      ext.toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
+                }).toList(),
               ),
             ],
           ),
-          SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            children: _supportedExtensions.map((ext) {
-              return Chip(
-                label: Text(
-                  ext.toUpperCase(),
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                backgroundColor: Colors.green.withOpacity(0.2),
-                side: BorderSide(color: Colors.green, width: 1),
-              );
-            }).toList(),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1067,33 +1533,71 @@ class _ImuAnalysisPageState extends State<ImuAnalysisPage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: Text(
-          'Upload Files',
-          style: TextStyle(
-            color: Colors.green,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        backgroundColor: Colors.grey[900],
-        iconTheme: IconThemeData(color: Colors.green),
-        elevation: 0,
-      ),
+      backgroundColor: const Color(0xFF0A0A0A),
       body: SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SizedBox(height: 40),
-              _buildUploadArea(),
-              SizedBox(height: 30),
-              _buildFileTypeInfo(),
-              SizedBox(height: 30),
-            ],
-          ),
+        child: Column(
+          children: [
+            // Modern header
+            Container(
+              padding: const EdgeInsets.all(24),
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => Navigator.pop(context),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[800],
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  const Text(
+                    'Upload Files',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  const Spacer(),
+                  const SizedBox(width: 44), // Balance the back button
+                ],
+              ),
+            ),
+
+            // Main content
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const SizedBox(height: 20),
+                    _buildUploadArea(),
+                    const SizedBox(height: 24),
+                    _buildFileTypeInfo(),
+                    const SizedBox(height: 40),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
+}
+
+class _spaceApi {
+  final String _hfToken = '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';
+
+  final String spaceApi =
+      'https://huggingface.co/spaces/zeyadAAmuhamed/Zee1604/run/predict';
 }

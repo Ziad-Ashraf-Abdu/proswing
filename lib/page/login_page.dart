@@ -55,6 +55,8 @@ class _LoginPageState extends State<LoginPage> {
           .collection('users')
           .doc(user.uid)
           .get();
+      print(userDoc);
+      print(user.uid);
 
       if (userDoc.exists) {
         Map<String, dynamic>? userData =

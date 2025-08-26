@@ -10,7 +10,11 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  mailer: ^6.4.1
 
+  http_parser: ^4.0.1
+  path: ^1.8.0
+  mime: ^1.0.0
   googleapis: ^13.1.0
   googleapis_auth: ^1.4.1
 
